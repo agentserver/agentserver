@@ -40,12 +40,14 @@ const (
 )
 
 type ManagedExecutorDocument struct {
+	Provider               string                     `json:"provider,omitempty"`
+	Kubernetes             *KubernetesSandboxDocument `json:"kubernetes,omitempty"`
 	Enabled                bool                       `json:"enabled"`
 	Stage                  string                     `json:"stage"`
 	WorkspaceAllowlist     []string                   `json:"workspaceAllowlist"`
 	BaseInstructionsSHA256 string                     `json:"baseInstructionsSha256"`
 	Environment            ManagedEnvironmentDocument `json:"environment"`
-	TAE                    ManagedTAEDocument         `json:"tae"`
+	TAE                    ManagedTAEDocument         `json:"tae,omitzero"`
 	Lark                   ManagedLarkDocument        `json:"lark"`
 	Bkectl                 ManagedBkectlDocument      `json:"bkectl"`
 }
@@ -973,6 +975,12 @@ func managedToolsEnabled(managed ManagedExecutorDocument) bool {
 }
 
 func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDocument) (LoadedConfig, error) {
+	if managed.Provider == "k8s" {
+		return validateKubernetesManagedExecutor(managed, document)
+	}
+	if (managed.Provider != "" && managed.Provider != "tae") || managed.Kubernetes != nil {
+		return LoadedConfig{}, errors.New("managedExecutor provider configuration is inconsistent")
+	}
 	switch {
 	case !managed.Enabled && managed.Stage != ManagedExecutorStageDisabled:
 		return LoadedConfig{}, fmt.Errorf("managedExecutor.stage must be %q while the managed executor is disabled", ManagedExecutorStageDisabled)

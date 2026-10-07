@@ -55,7 +55,8 @@ func (commands StateStoreManagedSandboxCommands) ReserveManagedSandbox(ctx conte
 		return corecontract.ReserveManagedSandboxResponse{}, errors.New("nil core state store")
 	}
 	result, err := commands.Store.ReserveManagedSandbox(ctx, coredb.ReserveManagedSandboxCommand{
-		SandboxID: request.SandboxID, WorkspaceID: request.WorkspaceID,
+		ProviderKind: request.ProviderKind,
+		SandboxID:    request.SandboxID, WorkspaceID: request.WorkspaceID,
 		SessionID: request.SessionID, EnvironmentID: request.EnvironmentID,
 		ProviderRegion: request.ProviderRegion, ProviderPSM: request.ProviderPSM,
 		ProviderSessionRef:   request.ProviderSessionRef,

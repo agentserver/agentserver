@@ -178,7 +178,7 @@ func (executor *ShellExecutor) Execute(ctx context.Context, request ShellExecute
 	if !begin.Began {
 		return ShellV1Result{}, fmt.Errorf("core did not grant the one-shot shell process/start dispatch; operation status is %q", begin.Operation.Status)
 	}
-	if environment.Target.Kind == executionbackend.KindTAE {
+	if environment.Target.Kind.Managed() {
 		return executor.executeManaged(ctx, request, environment, identities, plan, state)
 	}
 

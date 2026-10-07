@@ -56,7 +56,7 @@ type ManagedSandboxProfileDocument struct {
 	Region                string                        `json:"region"`
 	Gateway               ManagedSandboxGatewayDocument `json:"gateway"`
 	Environment           ManagedEnvironmentDocument    `json:"environment"`
-	TAE                   ManagedTAEDocument            `json:"tae"`
+	TAE                   ManagedTAEDocument            `json:"tae,omitzero"`
 	SandboxExternalEgress []EgressRuleDocument          `json:"sandboxExternalEgress"`
 }
 
@@ -71,6 +71,9 @@ type LoadedManagedSandboxProfile struct {
 func validateManagedSandboxProfiles(document *ConfigDocument) ([]LoadedManagedSandboxProfile, error) {
 	if document == nil {
 		return nil, errors.New("managed sandbox production configuration is required")
+	}
+	if document.Managed.Provider == "k8s" {
+		return validateKubernetesProfiles(document)
 	}
 	if len(document.SandboxProfiles) == 0 {
 		if document.Managed.Enabled {

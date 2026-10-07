@@ -255,6 +255,7 @@ function WorkspaceOverview({ workspace, api, onChanged, onArchived }: { workspac
     boe: t("platform.managedSandboxRegionBOE"),
     "i18n-bd": t("platform.managedSandboxRegionI18NBD"),
     "i18n-tt": t("platform.managedSandboxRegionI18NTT"),
+	  sg: "SG · Kubernetes",
   }
   const sandboxSettingInstalled = sandboxSetting ? sandboxRegions.includes(sandboxSetting.region) : false
   return <><PageHeader eyebrow={shortID(workspace.workspaceId)} title={workspace.name} description={`${workspace.currentUserRole} · ${workspace.status}`} actions={<Button onClick={() => { window.location.href = `https://browser.byted.bps.dev/workspaces/${workspace.workspaceId}` }}><Bot size={16} />{t("platform.openBrowser")}</Button>} />

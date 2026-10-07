@@ -86,11 +86,15 @@ func (identity OperationIdentity) BackendContext() executionbackend.OperationCon
 }
 
 type SandboxRef struct {
-	SandboxID        string `json:"sandboxId"`
-	TargetGeneration int64  `json:"targetGeneration"`
+	SandboxID        string                `json:"sandboxId"`
+	TargetGeneration int64                 `json:"targetGeneration"`
+	BackendKind      executionbackend.Kind `json:"backendKind,omitempty"`
 }
 
 func (ref SandboxRef) Validate() error {
+	if !ref.Kind().Managed() {
+		return errors.New("sandbox reference requires a managed backend kind")
+	}
 	if err := validateID("sandbox ID", ref.SandboxID); err != nil {
 		return err
 	}
@@ -102,9 +106,18 @@ func (ref SandboxRef) Validate() error {
 
 func (ref SandboxRef) Target(environmentID string) executionbackend.Target {
 	return executionbackend.Target{
-		Kind: executionbackend.KindTAE, ID: ref.SandboxID,
+		Kind: ref.Kind(), ID: ref.SandboxID,
 		Generation: ref.TargetGeneration, EnvironmentID: environmentID,
 	}
+}
+
+// Kind preserves the original TAE wire default; Kubernetes always sends its
+// explicit kind and must never be interpreted as a legacy TAE target.
+func (ref SandboxRef) Kind() executionbackend.Kind {
+	if ref.BackendKind == "" {
+		return executionbackend.KindTAE
+	}
+	return ref.BackendKind
 }
 
 type SandboxState string

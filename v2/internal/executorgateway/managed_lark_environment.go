@@ -9,7 +9,6 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
-	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
@@ -227,7 +226,7 @@ type managedProcessTool struct {
 }
 
 func validateManagedProcessRequest(request ManagedProcessEnvironmentRequest) (managedProcessTool, bool, bool, error) {
-	if request.Target.Kind != executionbackend.KindTAE {
+	if !request.Target.Kind.Managed() {
 		// The issuer is installed on the unified execution gateway, so BYO
 		// AgentX operations also pass this hook. They must remain byte-for-byte
 		// unchanged and never receive managed credential material.

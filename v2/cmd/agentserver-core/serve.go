@@ -174,15 +174,22 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		return fmt.Errorf("%s is required in production", coreManagedExecutorEnabledEnvironment)
 	}
 	webhookRequired := false
+	webhookEnvironment := coreTAEWebhookRequiredEnvironment
+	if strings.TrimSpace(getenv("AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE")) != "" {
+		if getenv(coreTAEWebhookRequiredEnvironment) != "" {
+			return errors.New("Kubernetes profile must not carry TAE webhook configuration")
+		}
+		webhookEnvironment = "AGENTSERVER_V2_MANAGED_WEBHOOK_REQUIRED"
+	}
 	if managedExecutorEnabled {
-		webhookRequired, err = strictOptionalBoolean(getenv(coreTAEWebhookRequiredEnvironment), coreTAEWebhookRequiredEnvironment)
+		webhookRequired, err = strictOptionalBoolean(getenv(webhookEnvironment), webhookEnvironment)
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(getenv(coreTAEWebhookRequiredEnvironment)) == "" {
-			return fmt.Errorf("%s is required with the managed executor", coreTAEWebhookRequiredEnvironment)
+		if strings.TrimSpace(getenv(webhookEnvironment)) == "" {
+			return fmt.Errorf("%s is required with the managed executor", webhookEnvironment)
 		}
-	} else if strings.TrimSpace(getenv(coreTAEWebhookRequiredEnvironment)) != "" {
+	} else if strings.TrimSpace(getenv(webhookEnvironment)) != "" {
 		return errors.New("TAE webhook profile requires the managed executor")
 	}
 	if managedExecutorEnabled && !webhookRequired {
@@ -193,15 +200,22 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		}
 	}
 	managedTAEPSM := ""
+	managedScopeEnvironment := coreManagedTAEPSMEnvironment
+	if strings.TrimSpace(getenv("AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE")) != "" {
+		if strings.TrimSpace(getenv(coreManagedTAEPSMEnvironment)) != "" || webhookRequired {
+			return errors.New("Kubernetes managed scope cannot carry TAE PSM or webhook authority")
+		}
+		managedScopeEnvironment = "AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE"
+	}
 	if managedExecutorEnabled {
-		managedTAEPSM, err = requiredConfiguration(getenv, coreManagedTAEPSMEnvironment)
+		managedTAEPSM, err = requiredConfiguration(getenv, managedScopeEnvironment)
 		if err != nil {
 			return err
 		}
 		if len(managedTAEPSM) > 256 || strings.ContainsAny(managedTAEPSM, "\x00\r\n") {
 			return fmt.Errorf("%s is invalid", coreManagedTAEPSMEnvironment)
 		}
-	} else if strings.TrimSpace(getenv(coreManagedTAEPSMEnvironment)) != "" {
+	} else if strings.TrimSpace(getenv(managedScopeEnvironment)) != "" {
 		return errors.New("managed TAE PSM requires the managed executor")
 	}
 	var sandboxGatewayIdentities []string
@@ -486,6 +500,11 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		return err
 	}
 	store := coredb.NewStateStore(pool)
+	deploymentCatalog, catalogErr := configureCoreManagedSandboxProfiles(getenv, managedExecutorEnabled)
+	if catalogErr != nil {
+		return catalogErr
+	}
+	store = store.WithManagedSandboxCatalog(deploymentCatalog)
 	var workspaceCredentialHandler *coreserver.WorkspaceCredentialHandler
 	var workspaceCredentialAuthorizationHandler *coreserver.WorkspaceCredentialAuthorizationHandler
 	var egressCredentialHandler *coreserver.EgressCredentialHandler

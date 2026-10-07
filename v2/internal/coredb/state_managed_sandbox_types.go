@@ -51,10 +51,11 @@ type ManagedSandbox struct {
 }
 
 func (sandbox ManagedSandbox) Target() DispatchTarget {
-	return DispatchTarget{Kind: DispatchTargetTAE, ID: sandbox.ID, Generation: sandbox.Generation}
+	return DispatchTarget{Kind: sandbox.ProviderKind, ID: sandbox.ID, Generation: sandbox.Generation}
 }
 
 type ReserveManagedSandboxCommand struct {
+	ProviderKind         string
 	SandboxID            string
 	WorkspaceID          string
 	SessionID            string
@@ -65,6 +66,17 @@ type ReserveManagedSandboxCommand struct {
 	CreateIdempotencyKey string
 	RequestedTTL         time.Duration
 	RequestedIdleTTL     time.Duration
+}
+
+func managedProviderKind(kind string) string {
+	if kind == "" {
+		return DispatchTargetTAE
+	}
+	return kind
+}
+
+func isManagedProvider(kind string) bool {
+	return kind == DispatchTargetTAE || kind == DispatchTargetKubernetes
 }
 
 type ReserveManagedSandboxResult struct {

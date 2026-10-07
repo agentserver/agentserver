@@ -118,11 +118,19 @@ func Render(config LoadedConfig) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
+	foundationItems := renderFoundation(context)
+	if managedExecutionActive(config.Document.Managed) && config.Document.Managed.Provider == "k8s" {
+		items, err := renderKubernetesWorkloadResources(context)
+		if err != nil {
+			return Bundle{}, err
+		}
+		foundationItems = append(foundationItems, items...)
+	}
 	groups := []struct {
 		name  string
 		items []kubeObject
 	}{
-		{name: foundationFile, items: renderFoundation(context)},
+		{name: foundationFile, items: foundationItems},
 		{name: hydraMigrationFile, items: []kubeObject{renderHydraMigrationJob(context)}},
 		{name: migrationFile, items: []kubeObject{renderMigrationJob(context)}},
 		{name: hydraSetupFile, items: []kubeObject{renderHydraClientSetupJob(context)}},
@@ -189,18 +197,22 @@ type managedEnvironmentRender struct {
 }
 
 type managedEnvironmentBootstrapJSON struct {
-	Version       int                                 `json:"version"`
-	WorkspaceID   string                              `json:"workspaceId"`
-	ExecutorID    string                              `json:"executorId"`
-	EnvironmentID string                              `json:"environmentId"`
-	Root          ManagedEnvironmentRootDocument      `json:"root"`
-	Runtime       ManagedCompatibilityRuntimeDocument `json:"runtime"`
+	MigrateAllWorkspaceRegions bool                                `json:"migrateAllWorkspaceRegions,omitempty"`
+	BackendKind                string                              `json:"backendKind,omitempty"`
+	Version                    int                                 `json:"version"`
+	WorkspaceID                string                              `json:"workspaceId"`
+	ExecutorID                 string                              `json:"executorId"`
+	EnvironmentID              string                              `json:"environmentId"`
+	Root                       ManagedEnvironmentRootDocument      `json:"root"`
+	Runtime                    ManagedCompatibilityRuntimeDocument `json:"runtime"`
 }
 
 func renderManagedEnvironmentBootstrapJSON(config LoadedConfig, profile LoadedManagedSandboxProfile) ([]byte, error) {
 	document := config.Document
 	return marshalCanonicalDocument(managedEnvironmentBootstrapJSON{
-		Version: 1, WorkspaceID: document.Bootstrap.WorkspaceID, ExecutorID: document.Bootstrap.ExecutorID,
+		MigrateAllWorkspaceRegions: document.Managed.Provider == "k8s" && document.Managed.Kubernetes.AllWorkspaces,
+		BackendKind:                document.Managed.Provider,
+		Version:                    1, WorkspaceID: document.Bootstrap.WorkspaceID, ExecutorID: document.Bootstrap.ExecutorID,
 		EnvironmentID: profile.Document.Environment.EnvironmentID,
 		Root:          profile.Document.Environment.Root, Runtime: profile.Document.Environment.Compatibility,
 	})

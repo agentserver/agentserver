@@ -314,10 +314,9 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	if managedExecutionActive(document.Managed) {
 		environment = append(environment,
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_IDS", managedSandboxGatewayIdentities),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
-			valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(document.Managed.TAE.Policy.PublicWebhookRequired)),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_PROFILE_CATALOG", managedSandboxCatalog),
 		)
+		environment = append(environment, managedCredentialScopeEnvironment(document.Managed)...)
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			environment = append(environment,
 				valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID", spiffeIdentity(config, egressComponent)),
@@ -401,6 +400,7 @@ func managedSandboxLaunchProfilesJSON(config LoadedConfig) (string, error) {
 
 func managedSandboxGatewayProfilesJSON(config LoadedConfig) (string, error) {
 	type gatewayProfile struct {
+		BackendKind              string `json:"backendKind,omitempty"`
 		Region                   string `json:"region"`
 		EnvironmentID            string `json:"environmentId"`
 		SandboxGatewayURL        string `json:"sandboxGatewayUrl"`
@@ -412,6 +412,7 @@ func managedSandboxGatewayProfilesJSON(config LoadedConfig) (string, error) {
 	for _, loaded := range config.ManagedSandboxProfiles {
 		profile := loaded.Document
 		profiles = append(profiles, gatewayProfile{
+			BackendKind:              config.Document.Managed.Provider,
 			Region:                   profile.Region,
 			EnvironmentID:            profile.Environment.EnvironmentID,
 			SandboxGatewayURL:        managedSandboxGatewayOrigin(profile.Gateway),
@@ -591,9 +592,8 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_ISSUER", issuer),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_KEY_ID", ProductionSandboxFencerKeyID),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("sandbox-fencer-capability.key")),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
-			valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(document.Managed.TAE.Policy.PublicWebhookRequired)),
 		)
+		environment = append(environment, managedCredentialScopeEnvironment(document.Managed)...)
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			environment = append(environment,
 				valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_ISSUER", issuer),
@@ -733,6 +733,9 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 }
 
 func renderSandboxDeployment(context renderContext, loaded LoadedManagedSandboxProfile) (kubeObject, error) {
+	if context.config.Document.Managed.Provider == "k8s" {
+		return renderKubernetesGateway(context, loaded)
+	}
 	config := context.config
 	document := config.Document
 	profile := loaded.Document

@@ -213,7 +213,7 @@ JOIN %s AS execution
  AND execution.env_id = $4
  AND execution.tool_name = 'shell'
  AND execution.status IN ('dispatching', 'running')
- AND execution.target_kind = 'tae'
+ AND execution.target_kind IN ('tae', 'k8s')
  AND execution.target_id = $10
  AND execution.target_generation = $11
 JOIN %s AS operation_row
@@ -221,7 +221,7 @@ JOIN %s AS operation_row
  AND operation_row.execution_id = execution.id
  AND operation_row.kind = 'process_start'
   AND operation_row.status IN ('dispatching', 'acknowledged')
-  AND operation_row.target_kind = 'tae'
+  AND operation_row.target_kind = execution.target_kind
  AND operation_row.target_id = execution.target_id
  AND operation_row.target_generation = execution.target_generation
 JOIN %s AS sandbox
@@ -230,7 +230,7 @@ JOIN %s AS sandbox
  AND sandbox.workspace_id = run.workspace_id
  AND sandbox.session_id = run.session_id
  AND sandbox.environment_id = execution.env_id
- AND sandbox.provider_kind = 'tae'
+ AND sandbox.provider_kind = execution.target_kind
  AND sandbox.provider_psm = $15
  AND sandbox.desired_state = 'ready'
  AND sandbox.observed_state = 'ready'
@@ -352,7 +352,7 @@ JOIN %s AS execution
  AND execution.env_id = $4
  AND execution.tool_name = 'shell'
  AND execution.status IN ('dispatching', 'running')
- AND execution.target_kind = 'tae'
+ AND execution.target_kind IN ('tae', 'k8s')
  AND execution.target_id = $10
  AND execution.target_generation = $11
 JOIN %s AS operation_row
@@ -360,7 +360,7 @@ JOIN %s AS operation_row
  AND operation_row.execution_id = execution.id
  AND operation_row.kind = 'process_start'
  AND operation_row.status = 'dispatching'
- AND operation_row.target_kind = 'tae'
+ AND operation_row.target_kind = execution.target_kind
  AND operation_row.target_id = execution.target_id
  AND operation_row.target_generation = execution.target_generation
 JOIN %s AS sandbox
@@ -369,7 +369,7 @@ JOIN %s AS sandbox
  AND sandbox.workspace_id = run.workspace_id
  AND sandbox.session_id = run.session_id
  AND sandbox.environment_id = execution.env_id
- AND sandbox.provider_kind = 'tae'
+ AND sandbox.provider_kind = execution.target_kind
  AND sandbox.desired_state = 'ready'
  AND sandbox.observed_state = 'ready'
  AND sandbox.expires_at > authority_time.now

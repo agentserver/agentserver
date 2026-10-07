@@ -13,16 +13,24 @@ import (
 // which is part of every validated execution target, rather than by a tool
 // argument, request header, or provider-controlled sandbox ID.
 type TAEBackendRouter struct {
+	kind          executionbackend.Kind
 	byEnvironment map[string]executionbackend.Backend
 }
 
 func NewTAEBackendRouter(backends map[string]executionbackend.Backend) (*TAEBackendRouter, error) {
+	return NewManagedBackendRouter(executionbackend.KindTAE, backends)
+}
+
+func NewManagedBackendRouter(kind executionbackend.Kind, backends map[string]executionbackend.Backend) (*TAEBackendRouter, error) {
+	if !kind.Managed() {
+		return nil, errors.New("managed backend kind required")
+	}
 	if len(backends) < 1 || len(backends) > len(managedsandboxprofile.Regions()) {
 		return nil, errors.New("TAE backend router requires between one and four environments")
 	}
 	copy := make(map[string]executionbackend.Backend, len(backends))
 	for environmentID, backend := range backends {
-		if backend == nil || backend.Kind() != executionbackend.KindTAE {
+		if backend == nil || backend.Kind() != kind {
 			return nil, errors.New("TAE backend router requires only TAE backends")
 		}
 		if err := validateRegistryIdentity("TAE backend environment ID", environmentID); err != nil {
@@ -30,10 +38,10 @@ func NewTAEBackendRouter(backends map[string]executionbackend.Backend) (*TAEBack
 		}
 		copy[environmentID] = backend
 	}
-	return &TAEBackendRouter{byEnvironment: copy}, nil
+	return &TAEBackendRouter{kind: kind, byEnvironment: copy}, nil
 }
 
-func (*TAEBackendRouter) Kind() executionbackend.Kind { return executionbackend.KindTAE }
+func (router *TAEBackendRouter) Kind() executionbackend.Kind { return router.kind }
 
 func (router *TAEBackendRouter) StartProcess(ctx context.Context, request executionbackend.StartProcessRequest) (executionbackend.Exchange, error) {
 	backend, err := router.backend(request.Target)
@@ -66,7 +74,7 @@ func (router *TAEBackendRouter) backend(target executionbackend.Target) (executi
 	if err := target.Validate(); err != nil {
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "invalid_target", err)
 	}
-	if target.Kind != executionbackend.KindTAE {
+	if target.Kind != router.kind {
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "wrong_backend_kind", errors.New("TAE backend profile router requires a TAE target"))
 	}
 	backend := router.byEnvironment[target.EnvironmentID]

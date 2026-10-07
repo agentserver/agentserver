@@ -517,7 +517,7 @@ func shellEnvironmentPaths(platform, root, relativeCWD string) (string, string, 
 }
 
 func managedPolicyTarget(target executionbackend.Target) executionbackend.Target {
-	if target.Kind == executionbackend.KindTAE {
+	if target.Kind.Managed() {
 		return target
 	}
 	return executionbackend.Target{}

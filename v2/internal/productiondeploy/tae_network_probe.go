@@ -19,6 +19,9 @@ const (
 // an actual published policy revision. Keeping the policy revision outside
 // this static document avoids evaluating deployment text with Helm tpl.
 func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
+	if config.Document.Managed.Provider == "k8s" {
+		return nil, nil
+	}
 	validated, err := ValidateConfig(config.Document)
 	if err != nil {
 		return nil, err

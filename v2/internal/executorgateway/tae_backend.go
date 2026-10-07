@@ -43,6 +43,7 @@ type SandboxGatewayTokenSource interface {
 }
 
 type TAEBackend struct {
+	kind       executionbackend.Kind
 	baseURL    *url.URL
 	httpClient *http.Client
 	tokens     SandboxGatewayTokenSource
@@ -54,6 +55,14 @@ func NewTAEBackend(baseURL string, httpClient *http.Client, tokens SandboxGatewa
 }
 
 func NewTAEBackendWithLogger(baseURL string, httpClient *http.Client, tokens SandboxGatewayTokenSource, logger *slog.Logger) (*TAEBackend, error) {
+	return NewManagedBackend(executionbackend.KindTAE, baseURL, httpClient, tokens, logger)
+}
+
+// NewManagedBackend reuses the authenticated NDJSON protocol, not TAE APIs.
+func NewManagedBackend(kind executionbackend.Kind, baseURL string, httpClient *http.Client, tokens SandboxGatewayTokenSource, logger *slog.Logger) (*TAEBackend, error) {
+	if !kind.Managed() {
+		return nil, errors.New("managed sandbox backend kind is required")
+	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawPath != "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" || parsed.ForceQuery ||
@@ -69,7 +78,7 @@ func NewTAEBackendWithLogger(baseURL string, httpClient *http.Client, tokens San
 	parsed.Path = ""
 	clientCopy := *httpClient
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &TAEBackend{baseURL: parsed, httpClient: &clientCopy, tokens: tokens, logger: logger}, nil
+	return &TAEBackend{kind: kind, baseURL: parsed, httpClient: &clientCopy, tokens: tokens, logger: logger}, nil
 }
 
 func taeLoopbackHost(host string) bool {
@@ -80,13 +89,21 @@ func taeLoopbackHost(host string) bool {
 	return address != nil && address.IsLoopback()
 }
 
-func (*TAEBackend) Kind() executionbackend.Kind { return executionbackend.KindTAE }
+func (backend *TAEBackend) Kind() executionbackend.Kind { return backend.kind }
+
+func (backend *TAEBackend) ref(target executionbackend.Target) sandboxcontract.SandboxRef {
+	ref := sandboxcontract.SandboxRef{SandboxID: target.ID, TargetGeneration: target.Generation}
+	if backend.kind != executionbackend.KindTAE {
+		ref.BackendKind = backend.kind
+	}
+	return ref
+}
 
 func (backend *TAEBackend) StartProcess(ctx context.Context, request executionbackend.StartProcessRequest) (executionbackend.Exchange, error) {
 	if err := request.Validate(); err != nil {
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "invalid_request", err)
 	}
-	if request.Target.Kind != executionbackend.KindTAE {
+	if request.Target.Kind != backend.kind {
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "wrong_backend_kind", errors.New("TAE backend requires a TAE target"))
 	}
 	if request.TTY {
@@ -102,7 +119,7 @@ func (backend *TAEBackend) StartProcess(ctx context.Context, request executionba
 	contractRequest := sandboxcontract.RunCommandRequest{
 		Profile: sandboxcontract.ProfileV1, RequestID: request.RequestID,
 		Identity:  backendOperationIdentity(request.Operation, request.Target.EnvironmentID),
-		Ref:       sandboxcontract.SandboxRef{SandboxID: request.Target.ID, TargetGeneration: request.Target.Generation},
+		Ref:       backend.ref(request.Target),
 		ProcessID: request.ProcessID, Executable: request.Executable,
 		Arguments: append([]string(nil), request.Arguments...), WorkingDirectory: request.WorkingDirectory,
 		WorkspaceAccess: request.WorkspaceAccess,
@@ -116,7 +133,7 @@ func (backend *TAEBackend) SignalProcess(ctx context.Context, request executionb
 	if err := request.Validate(); err != nil {
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "invalid_request", err)
 	}
-	if request.Target.Kind != executionbackend.KindTAE {
+	if request.Target.Kind != backend.kind {
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "wrong_backend_kind", errors.New("TAE backend requires a TAE target"))
 	}
 	path, err := sandboxcontract.SignalProcessPath(request.Target.ID, request.ProcessID)
@@ -126,7 +143,7 @@ func (backend *TAEBackend) SignalProcess(ctx context.Context, request executionb
 	contractRequest := sandboxcontract.SignalCommandRequest{
 		Profile: sandboxcontract.ProfileV1, RequestID: request.RequestID,
 		Identity:  backendOperationIdentity(request.Operation, request.Target.EnvironmentID),
-		Ref:       sandboxcontract.SandboxRef{SandboxID: request.Target.ID, TargetGeneration: request.Target.Generation},
+		Ref:       backend.ref(request.Target),
 		ProcessID: request.ProcessID, ProviderHandle: request.ProviderHandle,
 		Signal: request.Signal, Reason: request.Reason,
 	}
@@ -137,7 +154,7 @@ func (backend *TAEBackend) ReadFile(ctx context.Context, request executionbacken
 	if err := request.Validate(); err != nil {
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "invalid_request", err)
 	}
-	if request.Target.Kind != executionbackend.KindTAE {
+	if request.Target.Kind != backend.kind {
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "wrong_backend_kind", errors.New("TAE backend requires a TAE target"))
 	}
 	path, err := sandboxcontract.ReadFilePath(request.Target.ID)
@@ -147,7 +164,7 @@ func (backend *TAEBackend) ReadFile(ctx context.Context, request executionbacken
 	contractRequest := sandboxcontract.ReadFileRequest{
 		Profile: sandboxcontract.ProfileV1, RequestID: request.RequestID,
 		Identity: backendOperationIdentity(request.Operation, request.Target.EnvironmentID),
-		Ref:      sandboxcontract.SandboxRef{SandboxID: request.Target.ID, TargetGeneration: request.Target.Generation},
+		Ref:      backend.ref(request.Target),
 		Path:     request.Path, Offset: request.Offset, Limit: request.Limit,
 	}
 	return backend.openExchange(ctx, taeActionReadFile, path, request.Target, request.Operation, "", contractRequest)
@@ -203,7 +220,7 @@ func (backend *TAEBackend) openExchange(ctx context.Context, action, path string
 			executionbackend.OutcomeUnknown, "invalid_stream_content_type", errors.New("sandbox-gateway returned a non-NDJSON operation stream"))
 	}
 	return newTAEHTTPExchange(target, operation, backendOperationIdentity(operation, target.EnvironmentID),
-		sandboxcontract.SandboxRef{SandboxID: target.ID, TargetGeneration: target.Generation}, httpResponse.Body,
+		backend.ref(target), httpResponse.Body,
 		backend.logger, sandboxGatewayRequestWritten.Load(), httpResponse.StatusCode), nil
 }
 
@@ -334,6 +351,19 @@ func newTAEHTTPExchange(
 		body: body, decoder: decoder, done: make(chan struct{}), logger: logger,
 		sandboxGatewayRequestWritten: sandboxGatewayRequestWritten, sandboxGatewayHTTPStatus: sandboxGatewayHTTPStatus,
 	}
+}
+
+// NewSandboxOperationExchange decodes the shared bounded, identity-fenced
+// stream used by managed providers. It does not acquire dispatch authority.
+func NewSandboxOperationExchange(target executionbackend.Target, operation executionbackend.OperationContext, body io.ReadCloser) (executionbackend.Exchange, error) {
+	if !target.Kind.Managed() || target.Validate() != nil || operation.Validate() != nil || body == nil {
+		return nil, errors.New("invalid managed operation stream")
+	}
+	ref := sandboxcontract.SandboxRef{SandboxID: target.ID, TargetGeneration: target.Generation}
+	if target.Kind != executionbackend.KindTAE {
+		ref.BackendKind = target.Kind
+	}
+	return newTAEHTTPExchange(target, operation, backendOperationIdentity(operation, target.EnvironmentID), ref, body, nil, true, http.StatusOK), nil
 }
 
 func (exchange *taeHTTPExchange) Target() executionbackend.Target { return exchange.target }

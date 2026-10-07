@@ -57,6 +57,22 @@ FOR SHARE`, s.table("sessions"))
 		if sessionStatus != "active" {
 			return ReserveManagedSandboxResult{}, commandError(ErrorInvalidState, operation, "session", command.SessionID, "session is not active")
 		}
+		// A new Kubernetes reservation must refer to a separately registered
+		// Kubernetes profile owned by this workspace, never a relabeled TAE or
+		// BYO executor environment. Historical TAE reservation behavior remains.
+		if managedProviderKind(command.ProviderKind) == DispatchTargetKubernetes {
+			var valid bool
+			environmentQuery := fmt.Sprintf(`SELECT EXISTS (
+SELECT 1 FROM %s env JOIN %s owner ON owner.id = env.executor_id
+WHERE env.id = $1 AND env.backend_kind = 'k8s' AND env.status = 'online'
+AND (owner.workspace_id = $2 OR env.id = ANY($3::uuid[])) AND owner.status <> 'revoked')`, s.table("executor_environments"), s.table("executors"))
+			if err := transaction.QueryRow(ctx, environmentQuery, command.EnvironmentID, command.WorkspaceID, s.managedProfileIDs).Scan(&valid); err != nil {
+				return ReserveManagedSandboxResult{}, databaseError(operation+" validate Kubernetes environment", err)
+			}
+			if !valid {
+				return ReserveManagedSandboxResult{}, commandError(ErrorInvalidArgument, operation, "environment", command.EnvironmentID, "Kubernetes environment is not registered in workspace")
+			}
+		}
 		generationQuery := fmt.Sprintf(`
 SELECT COALESCE(pg_catalog.max(generation), 0) + 1
 FROM %s
@@ -73,7 +89,7 @@ INSERT INTO %s
 	 create_idempotency_key,
 	 requested_ttl_seconds, idle_ttl_seconds, idle_expires_at)
 VALUES
-    ($1, $2, $3, $4, 'tae', $5, 'ready', 'reserved',
+	    ($1, $2, $3, $4, $12, $5, 'ready', 'reserved',
 	 $6, $7, NULLIF($8, ''), $9, $10::bigint, $11::bigint,
 	 pg_catalog.clock_timestamp() + ($11::bigint * interval '1 second'))
 RETURNING %s`, s.table("managed_sandboxes"), managedSandboxColumns(""))
@@ -82,6 +98,7 @@ RETURNING %s`, s.table("managed_sandboxes"), managedSandboxColumns(""))
 			generation, command.ProviderRegion, command.ProviderPSM, command.ProviderSessionRef,
 			command.CreateIdempotencyKey,
 			int64(command.RequestedTTL/time.Second), int64(command.RequestedIdleTTL/time.Second),
+			managedProviderKind(command.ProviderKind),
 		))
 		if err != nil {
 			var postgresError *pgconn.PgError
@@ -459,7 +476,7 @@ JOIN %s AS execution
  AND execution.run_attempt_id = attempt.id
  AND execution.run_attempt_generation = attempt.generation
  AND execution.env_id = $11
- AND execution.target_kind = 'tae'
+ AND execution.target_kind IN ('tae', 'k8s')
  AND execution.target_id = $9
  AND execution.target_generation = $10
  AND execution.status IN ('dispatching', 'running', 'cancelling')
@@ -469,11 +486,12 @@ JOIN %s AS operation
  AND operation.mutation_key = $8
  AND operation.kind = $12
  AND operation.status = 'dispatching'
- AND operation.target_kind = 'tae'
+ AND operation.target_kind = execution.target_kind
  AND operation.target_id = execution.target_id
  AND operation.target_generation = execution.target_generation
 JOIN %s AS sandbox
   ON sandbox.id = execution.target_id
+ AND sandbox.provider_kind = execution.target_kind
  AND sandbox.generation = execution.target_generation
  AND sandbox.workspace_id = run.workspace_id
  AND sandbox.session_id = run.session_id
@@ -571,6 +589,9 @@ RETURNING %s`, s.table("managed_sandboxes"), managedSandboxColumns(""))
 }
 
 func validateReserveManagedSandbox(command ReserveManagedSandboxCommand) error {
+	if !isManagedProvider(managedProviderKind(command.ProviderKind)) {
+		return errors.New("unsupported managed provider kind")
+	}
 	for _, identity := range []struct{ name, value string }{
 		{"sandbox_id", command.SandboxID}, {"workspace_id", command.WorkspaceID},
 		{"session_id", command.SessionID}, {"environment_id", command.EnvironmentID},
@@ -607,7 +628,7 @@ func validateReserveManagedSandbox(command ReserveManagedSandboxCommand) error {
 
 func managedSandboxReservationMatches(sandbox ManagedSandbox, command ReserveManagedSandboxCommand) bool {
 	return sandbox.WorkspaceID == command.WorkspaceID && sandbox.SessionID == command.SessionID &&
-		sandbox.EnvironmentID == command.EnvironmentID && sandbox.ProviderKind == DispatchTargetTAE &&
+		sandbox.EnvironmentID == command.EnvironmentID && sandbox.ProviderKind == managedProviderKind(command.ProviderKind) &&
 		sandbox.ProviderRegion == command.ProviderRegion && sandbox.ProviderPSM == command.ProviderPSM &&
 		sandbox.RequestedTTL == command.RequestedTTL && sandbox.IdleTTL == command.RequestedIdleTTL
 }

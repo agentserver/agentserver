@@ -35,18 +35,21 @@ var (
 type Kind string
 
 const (
-	KindAgentX Kind = "agentx"
-	KindTAE    Kind = "tae"
+	KindAgentX     Kind = "agentx"
+	KindTAE        Kind = "tae"
+	KindKubernetes Kind = "k8s"
 )
 
 func (kind Kind) Validate() error {
 	switch kind {
-	case KindAgentX, KindTAE:
+	case KindAgentX, KindTAE, KindKubernetes:
 		return nil
 	default:
 		return fmt.Errorf("unsupported execution backend kind %q", kind)
 	}
 }
+
+func (kind Kind) Managed() bool { return kind == KindTAE || kind == KindKubernetes }
 
 // Target is an agentserver identity. ID is never a provider session ID.
 type Target struct {

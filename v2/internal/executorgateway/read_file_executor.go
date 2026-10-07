@@ -148,7 +148,7 @@ func (executor *ReadFileExecutor) Execute(ctx context.Context, request ReadFileE
 	if !begin.Began {
 		return ReadFileV1Result{}, fmt.Errorf("core did not grant the one-shot read-file dispatch; operation status is %q", begin.Operation.Status)
 	}
-	if environment.Target.Kind == executionbackend.KindTAE {
+	if environment.Target.Kind.Managed() {
 		return executor.executeManaged(request, plan, state)
 	}
 

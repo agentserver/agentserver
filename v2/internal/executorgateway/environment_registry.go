@@ -318,7 +318,7 @@ func resolveRegisteredEnvironment(environment RegisteredEnvironment) (ResolvedEn
 		return ResolvedEnvironment{}, err
 	}
 	wantRootKind := "local"
-	if target.Kind == executionbackend.KindTAE {
+	if target.Kind.Managed() {
 		wantRootKind = "managed"
 		if environment.Platform != "linux-amd64" {
 			return ResolvedEnvironment{}, errors.New("managed environments require the linux-amd64 platform")
@@ -376,7 +376,7 @@ func registeredEnvironmentTarget(environment RegisteredEnvironment) (executionba
 		if targetID != environment.ExecutorID || generation != environment.ConnectionGeneration {
 			return executionbackend.Target{}, errors.New("agentx environment target differs from its legacy executor projection")
 		}
-	case executionbackend.KindTAE:
+	case executionbackend.KindTAE, executionbackend.KindKubernetes:
 		if environment.ConnectionGeneration != 0 {
 			return executionbackend.Target{}, errors.New("managed environment carries an agentx connection generation")
 		}

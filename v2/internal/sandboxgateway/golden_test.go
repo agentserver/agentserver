@@ -36,6 +36,15 @@ const (
 )
 
 func TestFakeProviderLarkCLIGoldenPathThroughHTTPHandler(t *testing.T) {
+	testManagedProviderGoldenPath(t, executionbackend.KindTAE)
+}
+
+func TestKubernetesProviderContractThroughHTTPHandler(t *testing.T) {
+	testManagedProviderGoldenPath(t, executionbackend.KindKubernetes)
+}
+
+func testManagedProviderGoldenPath(t *testing.T, providerKind executionbackend.Kind) {
+	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	core := newFakeCore(now)
 	provider := fakeprovider.New(func() time.Time { return now }, nil)
@@ -44,7 +53,8 @@ func TestFakeProviderLarkCLIGoldenPathThroughHTTPHandler(t *testing.T) {
 		"90000000-0000-4000-8000-000000000002", "a0000000-0000-4000-8000-000000000002",
 	}}
 	service, err := sandboxgateway.NewService(sandboxgateway.Config{
-		Core: core, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
+		ProviderKind: providerKind,
+		Core:         core, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
 		ProviderRegion: "sg", ProviderPSM: "toutiao.tae.sandbox",
 		IdleTTL: 2 * time.Minute, EnsureTimeout: time.Second,
 		EnsurePollInterval: time.Millisecond, Root: "/workspace", Platform: "linux-amd64",
@@ -429,7 +439,7 @@ func (core *fakeCore) ReserveManagedSandbox(_ context.Context, request corecontr
 	state := corecontract.ManagedSandboxState{
 		SandboxID: request.SandboxID, WorkspaceID: request.WorkspaceID,
 		SessionID: request.SessionID, EnvironmentID: request.EnvironmentID,
-		ProviderKind: "tae", Generation: generation, DesiredState: "ready", ObservedState: "reserved",
+		ProviderKind: request.ProviderKind, Generation: generation, DesiredState: "ready", ObservedState: "reserved",
 		ProviderRegion: request.ProviderRegion, ProviderPSM: request.ProviderPSM,
 		ProviderSessionRef: request.ProviderSessionRef, CreateIdempotencyKey: request.CreateIdempotencyKey,
 		RequestedTTLSeconds: request.RequestedTTLSeconds, IdleTTLSeconds: request.IdleTTLSeconds,

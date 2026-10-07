@@ -50,7 +50,7 @@ func (fencer *GatewayManagedTargetFencer) FenceManagedTarget(
 	if err := target.Validate(); err != nil {
 		return err
 	}
-	if target.Kind != executionbackend.KindTAE {
+	if !target.Kind.Managed() {
 		return errors.New("managed target fencer requires a TAE target")
 	}
 	reason = strings.TrimSpace(reason)
@@ -68,6 +68,9 @@ func (fencer *GatewayManagedTargetFencer) FenceManagedTarget(
 		WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID, EnvironmentID: target.EnvironmentID,
 	}
 	ref := sandboxcontract.SandboxRef{SandboxID: target.ID, TargetGeneration: target.Generation}
+	if target.Kind != executionbackend.KindTAE {
+		ref.BackendKind = target.Kind
+	}
 	response, err := fencer.client.Delete(ctx, sandboxcontract.DeleteSandboxRequest{
 		Profile: sandboxcontract.ProfileV1, RequestID: requestID, Session: session, Ref: ref, Reason: reason,
 	}, sandboxclient.TokenRequest{

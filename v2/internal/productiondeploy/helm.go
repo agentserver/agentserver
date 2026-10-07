@@ -61,7 +61,7 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 		return HelmChart{}, fmt.Errorf("validate production Helm input: %w", err)
 	}
 	config = validated
-	if managedExecutionActive(config.Document.Managed) {
+	if managedExecutionActive(config.Document.Managed) && config.Document.Managed.Provider != "k8s" {
 		if err := validateManagedReleaseEvidence(config.Document); err != nil {
 			return HelmChart{}, fmt.Errorf("production Helm chart requires evidence-backed managed executor config: %w", err)
 		}
@@ -176,10 +176,12 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 			}{name: helmManagedEnvironmentManifestFile, resources: managedEnvironment},
 		)
 	}
-	manifestGroups = append(manifestGroups, struct {
-		name      string
-		resources []kubeObject
-	}{name: helmTAENetworkProbeManifestFile, resources: taeNetworkProbe})
+	if config.Document.Managed.Provider != "k8s" {
+		manifestGroups = append(manifestGroups, struct {
+			name      string
+			resources []kubeObject
+		}{name: helmTAENetworkProbeManifestFile, resources: taeNetworkProbe})
+	}
 	manifestGroups = append(manifestGroups, struct {
 		name      string
 		resources []kubeObject
@@ -209,7 +211,9 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 		renderedFile(helmMigrationTemplateFile, renderManifestTemplate(helmMigrationManifestFile)),
 		renderedFile(helmHydraSetupTemplateFile, renderManifestTemplate(helmHydraSetupManifestFile)),
 		renderedFile(helmBootstrapTemplateFile, renderManifestTemplate(helmBootstrapManifestFile)),
-		renderedFile(helmTAENetworkProbeTemplateFile, renderTAENetworkProbeTemplate(config.Document.Namespace, probeRegions)),
+	}
+	if config.Document.Managed.Provider != "k8s" {
+		files = append(files, renderedFile(helmTAENetworkProbeTemplateFile, renderTAENetworkProbeTemplate(config.Document.Namespace, probeRegions)))
 	}
 	if managedExecutionActive(config.Document.Managed) {
 		files = append(files, renderedFile(helmManagedEnvironmentTemplateFile, renderManifestTemplate(helmManagedEnvironmentManifestFile)))

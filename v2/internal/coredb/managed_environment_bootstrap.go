@@ -27,9 +27,11 @@ var ErrManagedEnvironmentProfileConflict = errors.New("managed environment ID be
 // it is never used as the TAE dispatch target. The live sandbox generation is
 // projected separately from managed_sandboxes.
 type ManagedEnvironmentProfile struct {
-	WorkspaceID   string
-	ExecutorID    string
-	EnvironmentID string
+	MigrateAllWorkspaceRegions bool
+	BackendKind                string
+	WorkspaceID                string
+	ExecutorID                 string
+	EnvironmentID              string
 
 	RootDescriptor json.RawMessage
 	CodexRelease   string
@@ -115,6 +117,24 @@ func bootstrapManagedEnvironmentProfileConfig(
 		return result, err
 	}
 	result.Created = created == 1
+	if profile.BackendKind == DispatchTargetKubernetes {
+		// Deployment cutover changes only future-run settings, never frozen
+		// run bindings or historical TAE rows. Record each affected workspace's
+		// previous audit owner, as in the initial settings migration.
+		query := fmt.Sprintf(`WITH changed AS (
+SELECT workspace_id,region,updated_by FROM %s.workspace_managed_sandbox_settings
+WHERE region <> 'sg' AND ($1::boolean OR workspace_id = $2) FOR UPDATE
+), updated AS (
+UPDATE %s.workspace_managed_sandbox_settings setting SET region='sg',version=setting.version+1,updated_at=pg_catalog.clock_timestamp()
+FROM changed WHERE setting.workspace_id=changed.workspace_id
+RETURNING setting.workspace_id,setting.version,changed.region,changed.updated_by
+) INSERT INTO %s.workspace_managed_sandbox_setting_events
+(event_id,workspace_id,actor_id,previous_region,current_region,setting_version)
+SELECT pg_catalog.gen_random_uuid(),workspace_id,updated_by,region,'sg',version FROM updated`, quotedSchema, quotedSchema, quotedSchema)
+		if _, err := transaction.Exec(ctx, query, profile.MigrateAllWorkspaceRegions, profile.WorkspaceID); err != nil {
+			return result, databaseError("migrate Kubernetes workspace region settings", err)
+		}
+	}
 	if err := transaction.Commit(ctx); err != nil {
 		return ManagedEnvironmentProfileBootstrapResult{}, databaseError("commit managed environment profile bootstrap", err)
 	}
@@ -122,6 +142,12 @@ func bootstrapManagedEnvironmentProfileConfig(
 }
 
 func validateManagedEnvironmentProfile(profile ManagedEnvironmentProfile) error {
+	if profile.MigrateAllWorkspaceRegions && profile.BackendKind != DispatchTargetKubernetes {
+		return errors.New("workspace region migration requires Kubernetes profile")
+	}
+	if !isManagedProvider(managedProviderKind(profile.BackendKind)) {
+		return errors.New("unsupported managed environment backend")
+	}
 	for _, identity := range []struct {
 		name  string
 		value string
@@ -227,13 +253,13 @@ func requireManagedEnvironmentExecutor(ctx context.Context, transaction pgx.Tx, 
 }
 
 func insertManagedEnvironmentProfile(ctx context.Context, transaction pgx.Tx, schema string, profile ManagedEnvironmentProfile) (int, error) {
-	var existingExecutorID string
-	lookup := fmt.Sprintf("SELECT executor_id::text FROM %s.executor_environments WHERE id = $1 FOR UPDATE", schema)
-	err := transaction.QueryRow(ctx, lookup, profile.EnvironmentID).Scan(&existingExecutorID)
+	var existingExecutorID, existingBackend string
+	lookup := fmt.Sprintf("SELECT executor_id::text, backend_kind FROM %s.executor_environments WHERE id = $1 FOR UPDATE", schema)
+	err := transaction.QueryRow(ctx, lookup, profile.EnvironmentID).Scan(&existingExecutorID, &existingBackend)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return 0, databaseError("read managed environment profile", err)
 	}
-	if err == nil && existingExecutorID != profile.ExecutorID {
+	if err == nil && (existingExecutorID != profile.ExecutorID || existingBackend != managedProviderKind(profile.BackendKind)) {
 		return 0, managedEnvironmentProfileConflict("environment", profile.EnvironmentID)
 	}
 
@@ -245,12 +271,12 @@ INSERT INTO %s.executor_environments
      process_methods, insecure_dev, status, backend_kind)
 VALUES
     ($1, $2, $3::jsonb, $4, 'linux-amd64',
-	     $5, $6, $7, $8, $9, false, 'online', 'tae')`, schema)
+	     $5, $6, $7, $8, $9, false, 'online', $10)`, schema)
 		created, insertErr := developmentInsert(
 			ctx, transaction, "insert managed environment profile", insert,
 			profile.EnvironmentID, profile.ExecutorID, string(profile.RootDescriptor), nil,
 			profile.CodexRelease, profile.CodexCommit, profile.CodexSHA256[:],
-			execprofile.FilesystemReadVersion, execprofile.ProcessMethods(),
+			execprofile.FilesystemReadVersion, execprofile.ProcessMethods(), managedProviderKind(profile.BackendKind),
 		)
 		if insertErr != nil {
 			return 0, insertErr
@@ -270,12 +296,12 @@ SET root_descriptor = $2::jsonb,
     process_methods = $8,
     insecure_dev = false,
     status = 'online',
-    backend_kind = 'tae'
+    backend_kind = $10
 WHERE id = $1 AND executor_id = $9`, schema)
 	tag, err := transaction.Exec(
 		ctx, update, profile.EnvironmentID, string(profile.RootDescriptor), nil,
 		profile.CodexRelease, profile.CodexCommit, profile.CodexSHA256[:],
-		execprofile.FilesystemReadVersion, execprofile.ProcessMethods(), profile.ExecutorID,
+		execprofile.FilesystemReadVersion, execprofile.ProcessMethods(), profile.ExecutorID, managedProviderKind(profile.BackendKind),
 	)
 	if err != nil {
 		return 0, databaseError("update managed environment profile", err)

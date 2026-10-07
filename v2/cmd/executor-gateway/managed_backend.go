@@ -225,7 +225,14 @@ func configureManagedProcessEnvironmentIssuer(
 		}
 		return value, nil
 	}
-	taePSM, err := required(gatewayManagedTAEPSMEnvironment)
+	scopeName := gatewayManagedTAEPSMEnvironment
+	if strings.TrimSpace(getenv("AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE")) != "" {
+		if strings.TrimSpace(getenv(gatewayManagedTAEPSMEnvironment)) != "" {
+			return nil, errors.New("managed provider scope and legacy TAE PSM are mutually exclusive")
+		}
+		scopeName = "AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE"
+	}
+	taePSM, err := required(scopeName)
 	if err != nil {
 		return nil, err
 	}
@@ -233,9 +240,19 @@ func configureManagedProcessEnvironmentIssuer(
 		return nil, fmt.Errorf("%s is invalid", gatewayManagedTAEPSMEnvironment)
 	}
 
-	webhookRequired, err := requiredBoolean(getenv, gatewayTAEWebhookRequiredEnvironment)
+	webhookEnvironment := gatewayTAEWebhookRequiredEnvironment
+	if scopeName == "AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE" {
+		if getenv(gatewayTAEWebhookRequiredEnvironment) != "" {
+			return nil, errors.New("Kubernetes profile must not carry TAE webhook configuration")
+		}
+		webhookEnvironment = "AGENTSERVER_V2_MANAGED_WEBHOOK_REQUIRED"
+	}
+	webhookRequired, err := requiredBoolean(getenv, webhookEnvironment)
 	if err != nil {
 		return nil, err
+	}
+	if scopeName == "AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE" && webhookRequired {
+		return nil, errors.New("Kubernetes credentials support process_env only")
 	}
 	egressNames := []string{gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment, gatewayEgressPlaceholderKeyEnvironment}
 	if !webhookRequired {

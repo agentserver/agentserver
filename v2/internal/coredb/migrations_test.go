@@ -12,8 +12,11 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 32 {
-		t.Fatalf("migration count = %d, want 32", len(migrations))
+	if len(migrations) != 33 {
+		t.Fatalf("migration count = %d, want 33", len(migrations))
+	}
+	if migrations[32].Version != 33 || migrations[32].Name != "kubernetes_managed_targets" {
+		t.Fatalf("unexpected Kubernetes migration: %+v", migrations[32])
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {

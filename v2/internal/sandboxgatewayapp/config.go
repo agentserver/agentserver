@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
@@ -61,6 +62,7 @@ const (
 var workspaceUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type Config struct {
+	ProviderKind  executionbackend.Kind
 	ListenAddress string
 
 	TLSCertificate   string
@@ -101,7 +103,12 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 		}
 		return value, nil
 	}
-	config := Config{}
+	config := Config{ProviderKind: executionbackend.Kind(strings.TrimSpace(getenv(ProviderModeEnvironment)))}
+	regionEnvironment, scopeEnvironment := ProviderRegionEnvironment, ProviderPSMEnvironment
+	if config.ProviderKind == executionbackend.KindKubernetes {
+		regionEnvironment = "AGENTSERVER_V2_SANDBOX_REGION"
+		scopeEnvironment = "AGENTSERVER_V2_SANDBOX_SCOPE"
+	}
 	for destination, name := range map[*string]string{
 		&config.ListenAddress: ListenAddressEnvironment, &config.TLSCertificate: TLSCertificateEnvironment,
 		&config.TLSKey: TLSKeyEnvironment, &config.ClientCA: ClientCAEnvironment,
@@ -110,7 +117,7 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 		&config.CoreCA: CoreCAEnvironment, &config.CoreCertificate: CoreCertificateEnvironment,
 		&config.CoreKey: CoreKeyEnvironment, &config.CoreServerName: CoreServerNameEnvironment,
 		&config.CapabilityKeyring: CapabilityKeyringEnvironment,
-		&config.ProviderRegion:    ProviderRegionEnvironment, &config.ProviderPSM: ProviderPSMEnvironment,
+		&config.ProviderRegion:    regionEnvironment, &config.ProviderPSM: scopeEnvironment,
 	} {
 		value, err := required(name)
 		if err != nil {
@@ -121,66 +128,70 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 	if _, _, err := net.SplitHostPort(config.ListenAddress); err != nil {
 		return Config{}, fmt.Errorf("parse production sandbox-gateway listen address: %w", err)
 	}
-	if strings.TrimSpace(getenv(ProviderModeEnvironment)) != "tae" {
-		return Config{}, fmt.Errorf("%s must be exactly tae", ProviderModeEnvironment)
+	if !config.ProviderKind.Managed() {
+		return Config{}, fmt.Errorf("%s must be tae or k8s", ProviderModeEnvironment)
 	}
-	if !managedsandboxprofile.ValidRegion(config.ProviderRegion) {
+	if (config.ProviderKind == executionbackend.KindTAE && !managedsandboxprofile.ValidRegion(config.ProviderRegion)) || (config.ProviderKind == executionbackend.KindKubernetes && config.ProviderRegion != "sg") {
 		return Config{}, fmt.Errorf("%s is unsupported", ProviderRegionEnvironment)
 	}
 	if len(config.ProviderPSM) > 256 || strings.ContainsAny(config.ProviderPSM, "\x00\r\n") {
 		return Config{}, errors.New("TAE provider PSM is invalid")
 	}
-	policyText := func(name string) (string, error) {
-		return required(name)
-	}
-	var policyErr error
-	if config.TAEPolicy.Revision, policyErr = policyText(TAEPolicyRevisionEnvironment); policyErr != nil {
-		return Config{}, policyErr
-	}
-	if config.TAEPolicy.PolicySHA256, policyErr = policyText(TAEPolicySHA256Environment); policyErr != nil {
-		return Config{}, policyErr
-	}
-	if config.TAEPolicy.PublicHost, policyErr = policyText(TAEPolicyHostEnvironment); policyErr != nil {
-		return Config{}, policyErr
-	}
-	if config.TAEPolicy.PublicAccess, policyErr = policyText(TAEPolicyAccessEnvironment); policyErr != nil {
-		return Config{}, policyErr
-	}
-	if config.TAEPolicy.EvidenceRef, policyErr = policyText(TAEPolicyEvidenceEnv); policyErr != nil {
-		return Config{}, policyErr
-	}
-	config.TAEPolicy.Region = config.ProviderRegion
-	config.TAEPolicy.SandboxPSM = config.ProviderPSM
-	config.TAEPolicy.Version = taepolicy.BindingVersion
-	config.TAEPolicy.PublicWebhookRequired, policyErr = requiredBool(getenv(TAEPolicyWebhookRequiredEnv), TAEPolicyWebhookRequiredEnv)
-	if policyErr != nil {
-		return Config{}, policyErr
-	}
-	if config.TAEPolicy.PublicWebhookRequired {
-		if config.TAEPolicy.WebhookMode, policyErr = policyText(TAEPolicyWebhookModeEnv); policyErr != nil {
+	if config.ProviderKind == executionbackend.KindTAE {
+		policyText := func(name string) (string, error) {
+			return required(name)
+		}
+		var policyErr error
+		if config.TAEPolicy.Revision, policyErr = policyText(TAEPolicyRevisionEnvironment); policyErr != nil {
 			return Config{}, policyErr
 		}
-		if config.TAEPolicy.WebhookPath, policyErr = policyText(TAEPolicyWebhookPathEnv); policyErr != nil {
+		if config.TAEPolicy.PolicySHA256, policyErr = policyText(TAEPolicySHA256Environment); policyErr != nil {
 			return Config{}, policyErr
 		}
-		config.TAEPolicy.WebhookPSM = strings.TrimSpace(getenv(TAEPolicyWebhookPSMEnv))
-		config.TAEPolicy.WebhookURL = strings.TrimSpace(getenv(TAEPolicyWebhookURLEnv))
-	} else if strings.TrimSpace(getenv(TAEPolicyWebhookModeEnv)) != "" ||
-		strings.TrimSpace(getenv(TAEPolicyWebhookPSMEnv)) != "" ||
-		strings.TrimSpace(getenv(TAEPolicyWebhookURLEnv)) != "" ||
-		strings.TrimSpace(getenv(TAEPolicyWebhookPathEnv)) != "" {
-		return Config{}, errors.New("TAE direct policy must not configure a webhook")
-	}
-	config.TAEPolicy.Published, policyErr = requiredBool(getenv(TAEPolicyPublishedEnv), TAEPolicyPublishedEnv)
-	if policyErr != nil {
-		return Config{}, policyErr
-	}
-	config.TAEPolicy.Approved, policyErr = requiredBool(getenv(TAEPolicyApprovedEnv), TAEPolicyApprovedEnv)
-	if policyErr != nil {
-		return Config{}, policyErr
-	}
-	if err := config.TAEPolicy.Validate(config.ProviderRegion, config.ProviderPSM, larkegresspolicy.SHA256Hex()); err != nil {
-		return Config{}, fmt.Errorf("TAE policy binding: %w", err)
+		if config.TAEPolicy.PublicHost, policyErr = policyText(TAEPolicyHostEnvironment); policyErr != nil {
+			return Config{}, policyErr
+		}
+		if config.TAEPolicy.PublicAccess, policyErr = policyText(TAEPolicyAccessEnvironment); policyErr != nil {
+			return Config{}, policyErr
+		}
+		if config.TAEPolicy.EvidenceRef, policyErr = policyText(TAEPolicyEvidenceEnv); policyErr != nil {
+			return Config{}, policyErr
+		}
+		config.TAEPolicy.Region = config.ProviderRegion
+		config.TAEPolicy.SandboxPSM = config.ProviderPSM
+		config.TAEPolicy.Version = taepolicy.BindingVersion
+		config.TAEPolicy.PublicWebhookRequired, policyErr = requiredBool(getenv(TAEPolicyWebhookRequiredEnv), TAEPolicyWebhookRequiredEnv)
+		if policyErr != nil {
+			return Config{}, policyErr
+		}
+		if config.TAEPolicy.PublicWebhookRequired {
+			if config.TAEPolicy.WebhookMode, policyErr = policyText(TAEPolicyWebhookModeEnv); policyErr != nil {
+				return Config{}, policyErr
+			}
+			if config.TAEPolicy.WebhookPath, policyErr = policyText(TAEPolicyWebhookPathEnv); policyErr != nil {
+				return Config{}, policyErr
+			}
+			config.TAEPolicy.WebhookPSM = strings.TrimSpace(getenv(TAEPolicyWebhookPSMEnv))
+			config.TAEPolicy.WebhookURL = strings.TrimSpace(getenv(TAEPolicyWebhookURLEnv))
+		} else if strings.TrimSpace(getenv(TAEPolicyWebhookModeEnv)) != "" ||
+			strings.TrimSpace(getenv(TAEPolicyWebhookPSMEnv)) != "" ||
+			strings.TrimSpace(getenv(TAEPolicyWebhookURLEnv)) != "" ||
+			strings.TrimSpace(getenv(TAEPolicyWebhookPathEnv)) != "" {
+			return Config{}, errors.New("TAE direct policy must not configure a webhook")
+		}
+		config.TAEPolicy.Published, policyErr = requiredBool(getenv(TAEPolicyPublishedEnv), TAEPolicyPublishedEnv)
+		if policyErr != nil {
+			return Config{}, policyErr
+		}
+		config.TAEPolicy.Approved, policyErr = requiredBool(getenv(TAEPolicyApprovedEnv), TAEPolicyApprovedEnv)
+		if policyErr != nil {
+			return Config{}, policyErr
+		}
+		if err := config.TAEPolicy.Validate(config.ProviderRegion, config.ProviderPSM, larkegresspolicy.SHA256Hex()); err != nil {
+			return Config{}, fmt.Errorf("TAE policy binding: %w", err)
+		}
+	} else if getenv(ProviderPSMEnvironment) != "" || getenv(ProviderRegionEnvironment) != "" || getenv(TAEPolicyRevisionEnvironment) != "" {
+		return Config{}, errors.New("Kubernetes provider must not carry TAE authority")
 	}
 	if config.SPIFFEIdentity == config.ExecutorIdentity || config.SPIFFEIdentity == config.HarnessIdentity || config.ExecutorIdentity == config.HarnessIdentity {
 		return Config{}, errors.New("sandbox-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
@@ -209,7 +220,11 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("%s: %w", IdleTTLEnvironment, err)
 	}
-	config.EnsureTimeout, err = durationValue(getenv(EnsureTimeoutEnvironment), 45*time.Second, time.Second, time.Minute, EnsureTimeoutEnvironment)
+	maximumEnsure := time.Minute
+	if config.ProviderKind == executionbackend.KindKubernetes {
+		maximumEnsure = 5 * time.Minute
+	}
+	config.EnsureTimeout, err = durationValue(getenv(EnsureTimeoutEnvironment), 45*time.Second, time.Second, maximumEnsure, EnsureTimeoutEnvironment)
 	if err != nil {
 		return Config{}, err
 	}
@@ -242,6 +257,11 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 	allowlist, err := required(WorkspaceAllowlistEnvironment)
 	if err != nil {
 		return Config{}, err
+	}
+	// An explicit deployment-wide Kubernetes profile still requires a signed
+	// session capability and Core live authority; '*' is not anonymous access.
+	if allowlist == "*" && config.ProviderKind == executionbackend.KindKubernetes {
+		return config, nil
 	}
 	config.WorkspaceAllowlist = strings.Split(allowlist, ",")
 	if len(config.WorkspaceAllowlist) < 1 || len(config.WorkspaceAllowlist) > 64 {

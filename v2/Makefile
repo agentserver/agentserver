@@ -3,7 +3,7 @@ GOFMT ?= gofmt
 NODE ?= node
 PNPM ?= pnpm
 
-.PHONY: check fmt fmt-check vet test provider-check web-check web-test postgres-test hydra-live-test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
+.PHONY: check fmt fmt-check vet test provider-check kubernetes-provider-check web-check web-test postgres-test hydra-live-test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
 
 check: fmt-check vet test provider-check web-check import-boundary contract-check
 
@@ -26,9 +26,15 @@ test:
 # providers/tae is a nested module because only the provider-linked
 # sandbox-gateway may import ByteDance-private SDKs. Root ./... does not cross
 # that module boundary, so production checks must exercise it explicitly.
-provider-check:
+provider-check: kubernetes-provider-check
 	$(GO) -C providers/tae vet ./...
 	$(GO) -C providers/tae test ./... -count=1
+
+# The Kubernetes provider has its own module so client-go stays out of the
+# Core/Harness binaries. Root ./... does not discover these tests.
+kubernetes-provider-check:
+	$(GO) -C providers/kubernetes vet ./...
+	$(GO) -C providers/kubernetes test -race ./... -count=1
 
 web-check:
 	$(PNPM) web:check

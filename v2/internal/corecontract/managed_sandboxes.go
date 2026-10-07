@@ -44,6 +44,7 @@ type ManagedSandboxState struct {
 }
 
 type ReserveManagedSandboxRequest struct {
+	ProviderKind         string `json:"providerKind,omitempty"`
 	SandboxID            string `json:"sandboxId"`
 	WorkspaceID          string `json:"workspaceId"`
 	SessionID            string `json:"sessionId"`

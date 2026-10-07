@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -20,9 +21,16 @@ func TestPostgreSQLManagedSandboxReservationPersistsTypedTTLs(t *testing.T) {
 	// constraint and scan back as an empty string.
 	reserve.ProviderSessionRef = ""
 
-	beforeReserve := time.Now().UTC()
+	// TTLs are allocated by the database clock, which need not be exactly
+	// synchronized with the host running this test (e.g. a local VM).
+	var beforeReserve, afterReserve time.Time
+	if err := pool.QueryRow(t.Context(), "SELECT pg_catalog.clock_timestamp()").Scan(&beforeReserve); err != nil {
+		t.Fatal(err)
+	}
 	result, err := store.ReserveManagedSandbox(t.Context(), reserve)
-	afterReserve := time.Now().UTC()
+	if clockErr := pool.QueryRow(t.Context(), "SELECT pg_catalog.clock_timestamp()").Scan(&afterReserve); clockErr != nil {
+		t.Fatal(clockErr)
+	}
 	if err != nil {
 		t.Fatalf("ReserveManagedSandbox() error = %v", err)
 	}
@@ -53,9 +61,75 @@ func TestPostgreSQLManagedSandboxReservationPersistsTypedTTLs(t *testing.T) {
 }
 
 func TestPostgreSQLManagedSandboxLifecycleActivityAndTAEDispatch(t *testing.T) {
+	testManagedSandboxLifecycle(t, DispatchTargetTAE)
+}
+
+func TestPostgreSQLManagedSandboxLifecycleActivityAndKubernetesDispatch(t *testing.T) {
+	testManagedSandboxLifecycle(t, DispatchTargetKubernetes)
+}
+
+func TestPostgreSQLKubernetesSharedProfileStillIsolatesWorkspaces(t *testing.T) {
+	testManagedSandboxLifecycle(t, DispatchTargetKubernetes, true)
+}
+
+func testManagedSandboxLifecycle(t *testing.T, providerKind string, shared ...bool) {
+	t.Helper()
 	store, pool, schema := newPostgresStateStore(t)
 	running := startExecutionTestRun(t, store, pool, schema, 810_000)
 	reserve := managedSandboxTestReserve(811_000, running)
+	reserve.ProviderKind = providerKind
+	if providerKind == DispatchTargetKubernetes {
+		if _, err := store.ReserveManagedSandbox(t.Context(), reserve); !HasStateErrorCode(err, ErrorInvalidArgument) {
+			t.Fatalf("unregistered Kubernetes environment accepted: %v", err)
+		}
+		profile := validManagedEnvironmentProfile()
+		profile.WorkspaceID = reserve.WorkspaceID
+		profile.EnvironmentID = reserve.EnvironmentID
+		profile.ExecutorID = stateTestUUID(811_010)
+		profile.BackendKind = DispatchTargetKubernetes
+		if len(shared) > 0 && shared[0] {
+			owner := startExecutionTestRun(t, store, pool, schema, 890_000)
+			profile.WorkspaceID = owner.Run.WorkspaceID
+		}
+		if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.executors (id, workspace_id, status) VALUES ($1, $2, 'enrolling')", quoteIdentifier(schema)), profile.ExecutorID, profile.WorkspaceID); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := pool.Begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := insertManagedEnvironmentProfile(t.Context(), tx, quoteIdentifier(schema), profile); err != nil {
+			tx.Rollback(t.Context())
+			t.Fatal(err)
+		}
+		if err := tx.Commit(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if profile.WorkspaceID != reserve.WorkspaceID {
+			if _, err := store.ReserveManagedSandbox(t.Context(), reserve); !HasStateErrorCode(err, ErrorInvalidArgument) {
+				t.Fatalf("unconfigured cross-workspace profile accepted: %v", err)
+			}
+			catalog, err := managedsandboxprofile.NewCatalog("sg", []managedsandboxprofile.Binding{{Region: "sg", EnvironmentID: profile.EnvironmentID}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store = store.WithManagedSandboxCatalog(catalog)
+			if store.defaultManagedRegion() != "sg" {
+				t.Fatal("new workspace default is not SG")
+			}
+		}
+		// A deployment cannot reuse the environment UUID to change providers.
+		profile.BackendKind = DispatchTargetTAE
+		tx, err = pool.Begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = insertManagedEnvironmentProfile(t.Context(), tx, quoteIdentifier(schema), profile)
+		tx.Rollback(t.Context())
+		if err == nil {
+			t.Fatal("bootstrap relabeled Kubernetes as TAE")
+		}
+	}
 
 	const contenders = 8
 	results := make(chan ReserveManagedSandboxResult, contenders)
@@ -94,6 +168,9 @@ func TestPostgreSQLManagedSandboxLifecycleActivityAndTAEDispatch(t *testing.T) {
 	}
 	if createdCount != 1 {
 		t.Fatalf("concurrent reservations created %d rows, want exactly one", createdCount)
+	}
+	if sandbox.ProviderKind != providerKind {
+		t.Fatalf("stored kind = %q, want %q", sandbox.ProviderKind, providerKind)
 	}
 
 	creating, changed, err := store.BeginManagedSandboxCreate(t.Context(), BeginManagedSandboxCreateCommand{
@@ -151,6 +228,19 @@ func TestPostgreSQLManagedSandboxLifecycleActivityAndTAEDispatch(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("RenewManagedSandboxActivity() error = %v", err)
+	}
+	if providerKind == DispatchTargetKubernetes {
+		envs, err := store.ListOnlineExecutorEnvironments(t.Context(), ListOnlineExecutorEnvironmentsQuery{WorkspaceID: running.Run.WorkspaceID, SessionID: running.Run.SessionID, RunAttemptID: running.Attempt.ID, RunAttemptGeneration: running.Attempt.Generation})
+		if err != nil || len(envs) != 1 || envs[0].BackendKind != DispatchTargetKubernetes || envs[0].TargetID != ready.ID {
+			t.Fatalf("Kubernetes environment catalog: %+v %v", envs, err)
+		}
+		if len(shared) > 0 && shared[0] {
+			other := startExecutionTestRun(t, store, pool, schema, 895_000)
+			envs, err := store.ListOnlineExecutorEnvironments(t.Context(), ListOnlineExecutorEnvironmentsQuery{WorkspaceID: other.Run.WorkspaceID, SessionID: other.Run.SessionID, RunAttemptID: other.Attempt.ID, RunAttemptGeneration: other.Attempt.Generation})
+			if err != nil || len(envs) != 0 {
+				t.Fatalf("shared profile leaked a live sandbox to another workspace: %+v %v", envs, err)
+			}
+		}
 	}
 	setManagedSandboxIdleExpiry(t, pool, schema, ready.ID, time.Now().UTC().Add(-time.Minute))
 	reconcile, err := store.ListManagedSandboxesForReconcile(t.Context(), ListManagedSandboxesForReconcileQuery{Limit: 100})

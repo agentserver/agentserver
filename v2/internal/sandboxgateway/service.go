@@ -21,6 +21,7 @@ import (
 type IDGenerator func() (string, error)
 
 type Config struct {
+	ProviderKind       executionbackend.Kind
 	Core               Core
 	Provider           Provider
 	Limits             sandboxcontract.Limits
@@ -38,6 +39,7 @@ type Config struct {
 }
 
 type Service struct {
+	providerKind       executionbackend.Kind
 	core               Core
 	provider           Provider
 	limits             sandboxcontract.Limits
@@ -84,6 +86,12 @@ func (serviceError *Error) Unwrap() error {
 }
 
 func NewService(config Config) (*Service, error) {
+	if config.ProviderKind == "" {
+		config.ProviderKind = executionbackend.KindTAE
+	}
+	if !config.ProviderKind.Managed() {
+		return nil, errors.New("sandbox provider kind is invalid")
+	}
 	if config.Core == nil || config.Provider == nil {
 		return nil, errors.New("sandbox gateway core and provider are required")
 	}
@@ -96,7 +104,11 @@ func NewService(config Config) (*Service, error) {
 	if config.IdleTTL <= 0 || config.IdleTTL > time.Duration(config.Limits.MaxSandboxTTLSeconds)*time.Second || config.IdleTTL%time.Second != 0 {
 		return nil, errors.New("sandbox gateway idle TTL must be whole seconds within sandbox TTL limits")
 	}
-	if config.EnsureTimeout <= 0 || config.EnsureTimeout > time.Minute {
+	maxEnsure := time.Minute
+	if config.ProviderKind == executionbackend.KindKubernetes {
+		maxEnsure = 5 * time.Minute
+	}
+	if config.EnsureTimeout <= 0 || config.EnsureTimeout > maxEnsure {
 		return nil, errors.New("sandbox gateway ensure timeout must be positive and at most one minute")
 	}
 	if config.EnsurePollInterval <= 0 || config.EnsurePollInterval > config.EnsureTimeout {
@@ -131,7 +143,8 @@ func NewService(config Config) (*Service, error) {
 		}
 	}
 	return &Service{
-		core: config.Core, provider: config.Provider, limits: config.Limits,
+		providerKind: config.ProviderKind,
+		core:         config.Core, provider: config.Provider, limits: config.Limits,
 		providerRegion: config.ProviderRegion, providerPSM: config.ProviderPSM,
 		idleTTL: config.IdleTTL, ensureTimeout: config.EnsureTimeout,
 		ensurePollInterval: config.EnsurePollInterval, root: config.Root,
@@ -163,13 +176,16 @@ func (service *Service) EnsureSandbox(ctx context.Context, principal Principal, 
 	reserved, err := service.core.ReserveManagedSandbox(ctx, corecontract.ReserveManagedSandboxRequest{
 		SandboxID: sandboxID, WorkspaceID: request.Session.WorkspaceID,
 		SessionID: request.Session.SessionID, EnvironmentID: request.Session.EnvironmentID,
-		ProviderRegion: service.providerRegion, ProviderPSM: service.providerPSM,
+		ProviderKind: string(service.providerKind), ProviderRegion: service.providerRegion, ProviderPSM: service.providerPSM,
 		ProviderSessionRef: "", CreateIdempotencyKey: createKey,
 		RequestedTTLSeconds: request.RequestedTTLSeconds, IdleTTLSeconds: int64(service.idleTTL / time.Second),
 	})
 	if err != nil {
 		service.logEnsure("error", "reserve_failed", request.RequestID, principal, corecontract.ManagedSandboxState{}, ProviderSandbox{}, 0, startedAt)
 		return sandboxcontract.EnsureSandboxResponse{}, coreServiceError("reserve_failed", err)
+	}
+	if err := service.matchShard(reserved.Sandbox); err != nil {
+		return sandboxcontract.EnsureSandboxResponse{}, forbidden(err)
 	}
 	service.logEnsure("info", "reserved", request.RequestID, principal, reserved.Sandbox, ProviderSandbox{}, 0, startedAt,
 		"reservation_created", reserved.Created)
@@ -313,6 +329,7 @@ func (service *Service) ensureManagedSandbox(
 
 func (service *Service) createProviderSandbox(ctx context.Context, state corecontract.ManagedSandboxState) (ProviderSandbox, corecontract.ManagedSandboxState, bool, error) {
 	providerSandbox, err := service.provider.CreateSandbox(ctx, CreateSandboxRequest{
+		Generation: state.Generation,
 		SessionRef: state.ProviderSessionRef, SandboxID: state.SandboxID, IdempotencyKey: state.CreateIdempotencyKey,
 		WorkspaceID: state.WorkspaceID, SessionID: state.SessionID, EnvironmentID: state.EnvironmentID,
 		Region: state.ProviderRegion, PSM: state.ProviderPSM,
@@ -466,6 +483,9 @@ func (service *Service) convergeReady(ctx context.Context, state corecontract.Ma
 }
 
 func (service *Service) findOrGetProviderSandbox(ctx context.Context, state corecontract.ManagedSandboxState) (ProviderSandbox, error) {
+	if err := service.matchShard(state); err != nil {
+		return ProviderSandbox{}, forbidden(err)
+	}
 	if state.ProviderSessionRef != "" {
 		return service.provider.GetSandbox(ctx, state.ProviderSessionRef)
 	}
@@ -474,7 +494,8 @@ func (service *Service) findOrGetProviderSandbox(ctx context.Context, state core
 
 func (service *Service) providerFindRequest(state corecontract.ManagedSandboxState) FindSandboxRequest {
 	return FindSandboxRequest{
-		SandboxID: state.SandboxID, IdempotencyKey: state.CreateIdempotencyKey,
+		Generation: state.Generation,
+		SandboxID:  state.SandboxID, IdempotencyKey: state.CreateIdempotencyKey,
 		WorkspaceID: state.WorkspaceID, SessionID: state.SessionID,
 		EnvironmentID: state.EnvironmentID, Region: state.ProviderRegion,
 		PSM: state.ProviderPSM,
@@ -482,6 +503,9 @@ func (service *Service) providerFindRequest(state corecontract.ManagedSandboxSta
 }
 
 func (service *Service) deleteProviderSandbox(ctx context.Context, state corecontract.ManagedSandboxState) error {
+	if err := service.matchShard(state); err != nil {
+		return forbidden(err)
+	}
 	return service.provider.DeleteSandbox(ctx, DeleteSandboxProviderRequest{
 		SessionRef: state.ProviderSessionRef,
 		Identity:   service.providerFindRequest(state),
@@ -489,6 +513,9 @@ func (service *Service) deleteProviderSandbox(ctx context.Context, state corecon
 }
 
 func (service *Service) GetSandbox(ctx context.Context, principal Principal, request sandboxcontract.GetSandboxRequest) (sandboxcontract.SandboxResponse, error) {
+	if request.Ref.Kind() != service.providerKind {
+		return sandboxcontract.SandboxResponse{}, forbidden(errors.New("sandbox reference provider kind mismatch"))
+	}
 	if err := request.Validate(service.limits); err != nil {
 		return sandboxcontract.SandboxResponse{}, invalidRequest(err)
 	}
@@ -505,7 +532,7 @@ func (service *Service) GetSandbox(ctx context.Context, principal Principal, req
 	if err != nil {
 		return sandboxcontract.SandboxResponse{}, coreServiceError("get_failed", err)
 	}
-	if err := matchSessionState(request.Session, state.Sandbox); err != nil {
+	if err := service.matchSession(request.Session, state.Sandbox); err != nil {
 		return sandboxcontract.SandboxResponse{}, forbidden(err)
 	}
 	providerSandbox, err := service.provider.GetSandbox(ctx, state.Sandbox.ProviderSessionRef)
@@ -527,6 +554,9 @@ func (service *Service) GetSandbox(ctx context.Context, principal Principal, req
 }
 
 func (service *Service) RenewSandboxActivity(ctx context.Context, principal Principal, request sandboxcontract.RenewSandboxActivityRequest) (sandboxcontract.SandboxResponse, error) {
+	if request.Ref.Kind() != service.providerKind {
+		return sandboxcontract.SandboxResponse{}, forbidden(errors.New("sandbox reference provider kind mismatch"))
+	}
 	if err := request.Validate(service.limits); err != nil {
 		return sandboxcontract.SandboxResponse{}, invalidRequest(err)
 	}
@@ -551,7 +581,7 @@ func (service *Service) RenewSandboxActivity(ctx context.Context, principal Prin
 	if err != nil {
 		return sandboxcontract.SandboxResponse{}, coreServiceError("renew_activity_failed", err)
 	}
-	if err := matchSessionState(request.Session, renewed.Sandbox); err != nil {
+	if err := service.matchSession(request.Session, renewed.Sandbox); err != nil {
 		return sandboxcontract.SandboxResponse{}, forbidden(err)
 	}
 	providerSandbox, err := service.provider.GetSandbox(ctx, renewed.Sandbox.ProviderSessionRef)
@@ -573,6 +603,9 @@ func (service *Service) RenewSandboxActivity(ctx context.Context, principal Prin
 }
 
 func (service *Service) ReleaseSandboxActivity(ctx context.Context, principal Principal, request sandboxcontract.ReleaseSandboxActivityRequest) (sandboxcontract.SandboxResponse, error) {
+	if request.Ref.Kind() != service.providerKind {
+		return sandboxcontract.SandboxResponse{}, forbidden(errors.New("sandbox reference provider kind mismatch"))
+	}
 	if err := request.Validate(service.limits); err != nil {
 		return sandboxcontract.SandboxResponse{}, invalidRequest(err)
 	}
@@ -597,7 +630,7 @@ func (service *Service) ReleaseSandboxActivity(ctx context.Context, principal Pr
 	if err != nil {
 		return sandboxcontract.SandboxResponse{}, coreServiceError("release_activity_failed", err)
 	}
-	if err := matchSessionState(request.Session, released.Sandbox); err != nil {
+	if err := service.matchSession(request.Session, released.Sandbox); err != nil {
 		return sandboxcontract.SandboxResponse{}, forbidden(err)
 	}
 	providerSandbox, err := service.provider.GetSandbox(ctx, released.Sandbox.ProviderSessionRef)
@@ -619,6 +652,9 @@ func (service *Service) ReleaseSandboxActivity(ctx context.Context, principal Pr
 }
 
 func (service *Service) SetSandboxTimeout(ctx context.Context, principal Principal, request sandboxcontract.SetSandboxTimeoutRequest) (sandboxcontract.SandboxResponse, error) {
+	if request.Ref.Kind() != service.providerKind {
+		return sandboxcontract.SandboxResponse{}, forbidden(errors.New("sandbox reference provider kind mismatch"))
+	}
 	if err := request.Validate(service.limits); err != nil {
 		return sandboxcontract.SandboxResponse{}, invalidRequest(err)
 	}
@@ -634,6 +670,9 @@ func (service *Service) SetSandboxTimeout(ctx context.Context, principal Princip
 	current, err := service.core.GetManagedSandbox(ctx, request.Ref.SandboxID, request.Ref.TargetGeneration)
 	if err != nil {
 		return sandboxcontract.SandboxResponse{}, coreServiceError("get_failed", err)
+	}
+	if err := service.matchSession(request.Session, current.Sandbox); err != nil {
+		return sandboxcontract.SandboxResponse{}, forbidden(err)
 	}
 	if err := matchReadySessionState(request.Session, current.Sandbox, service.now()); err != nil {
 		return sandboxcontract.SandboxResponse{}, conflict("sandbox_not_ready", err)
@@ -655,6 +694,9 @@ func (service *Service) SetSandboxTimeout(ctx context.Context, principal Princip
 }
 
 func (service *Service) DeleteSandbox(ctx context.Context, principal Principal, request sandboxcontract.DeleteSandboxRequest) (sandboxcontract.SandboxResponse, error) {
+	if request.Ref.Kind() != service.providerKind {
+		return sandboxcontract.SandboxResponse{}, forbidden(errors.New("sandbox reference provider kind mismatch"))
+	}
 	if err := request.Validate(service.limits); err != nil {
 		return sandboxcontract.SandboxResponse{}, invalidRequest(err)
 	}
@@ -671,7 +713,7 @@ func (service *Service) DeleteSandbox(ctx context.Context, principal Principal, 
 	if err != nil {
 		return sandboxcontract.SandboxResponse{}, coreServiceError("get_failed", err)
 	}
-	if err := matchSessionState(request.Session, current.Sandbox); err != nil {
+	if err := service.matchSession(request.Session, current.Sandbox); err != nil {
 		return sandboxcontract.SandboxResponse{}, forbidden(err)
 	}
 	deleting, err := service.core.BeginManagedSandboxDelete(ctx, corecontract.BeginManagedSandboxDeleteRequest{
@@ -794,6 +836,9 @@ func (service *Service) ReadFile(ctx context.Context, principal Principal, reque
 }
 
 func (service *Service) authorizeOperation(ctx context.Context, identity sandboxcontract.OperationIdentity, ref sandboxcontract.SandboxRef, action string) (corecontract.ManagedSandboxState, error) {
+	if ref.Kind() != service.providerKind {
+		return corecontract.ManagedSandboxState{}, dispatchRequestError(errors.New("sandbox reference provider kind mismatch"))
+	}
 	if !service.workspaceAllowed(identity.Session.WorkspaceID) {
 		return corecontract.ManagedSandboxState{}, executionbackend.NewDispatchError(
 			executionbackend.OutcomeNotSent, "workspace_not_allowed", errors.New("workspace is not enabled for managed execution"),
@@ -821,6 +866,9 @@ func (service *Service) authorizeOperation(ctx context.Context, identity sandbox
 	}
 	if err := matchReadySessionState(identity.Session, current.Sandbox, service.now()); err != nil {
 		return corecontract.ManagedSandboxState{}, dispatchUnknown("target_fenced", err)
+	}
+	if current.Sandbox.ProviderKind != string(service.providerKind) || current.Sandbox.ProviderRegion != service.providerRegion || current.Sandbox.ProviderPSM != service.providerPSM {
+		return corecontract.ManagedSandboxState{}, dispatchRequestError(errors.New("sandbox target belongs to another provider shard"))
 	}
 	return current.Sandbox, nil
 }
@@ -988,6 +1036,9 @@ func (service *Service) contractSandbox(state corecontract.ManagedSandboxState, 
 		Ref:     sandboxcontract.SandboxRef{SandboxID: state.SandboxID, TargetGeneration: state.Generation},
 		State:   sandboxcontract.SandboxState(state.ObservedState),
 	}
+	if service.providerKind != executionbackend.KindTAE {
+		result.Ref.BackendKind = service.providerKind
+	}
 	if state.ObservedState == "ready" {
 		result.Root = providerSandbox.Root
 		result.ExpiresAt = providerSandbox.ExpiresAt
@@ -1006,6 +1057,20 @@ func matchSessionState(identity sandboxcontract.SessionIdentity, state corecontr
 		return errors.New("managed sandbox is outside the requested session")
 	}
 	return nil
+}
+
+func (service *Service) matchShard(state corecontract.ManagedSandboxState) error {
+	if state.ProviderKind != string(service.providerKind) || state.ProviderRegion != service.providerRegion || state.ProviderPSM != service.providerPSM {
+		return errors.New("sandbox belongs to a different provider shard")
+	}
+	return nil
+}
+
+func (service *Service) matchSession(identity sandboxcontract.SessionIdentity, state corecontract.ManagedSandboxState) error {
+	if err := service.matchShard(state); err != nil {
+		return err
+	}
+	return matchSessionState(identity, state)
 }
 
 func matchReadySessionState(identity sandboxcontract.SessionIdentity, state corecontract.ManagedSandboxState, now time.Time) error {

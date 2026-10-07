@@ -399,7 +399,7 @@ func normalizedPrepareTarget(command PrepareExecutionCommand) (DispatchTarget, e
 		if command.ExecutorID != target.ID {
 			return DispatchTarget{}, errors.New("agentx target_id must equal executor_id")
 		}
-	case DispatchTargetTAE:
+	case DispatchTargetTAE, DispatchTargetKubernetes:
 		if command.ExecutorID != "" {
 			return DispatchTarget{}, errors.New("managed execution must not project a TAE sandbox as executor_id")
 		}
@@ -408,8 +408,8 @@ func normalizedPrepareTarget(command PrepareExecutionCommand) (DispatchTarget, e
 }
 
 func validateDispatchTarget(target DispatchTarget, requireGeneration bool) error {
-	if target.Kind != DispatchTargetAgentX && target.Kind != DispatchTargetTAE {
-		return errors.New("target_kind must be agentx or tae")
+	if target.Kind != DispatchTargetAgentX && !isManagedProvider(target.Kind) {
+		return errors.New("target_kind must be agentx, tae or k8s")
 	}
 	if err := validateUUID("target_id", target.ID); err != nil {
 		return err

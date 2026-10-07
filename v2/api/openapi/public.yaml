@@ -1014,7 +1014,7 @@
         "properties": {"workspace": {"$ref": "#/components/schemas/WorkspaceState"}, "changed": {"type": "boolean"}}
       },
       "ManagedSandboxRegion": {
-        "type": "string", "enum": ["cn", "boe", "i18n-bd", "i18n-tt"]
+        "type": "string", "enum": ["cn", "boe", "i18n-bd", "i18n-tt", "sg"]
       },
       "WorkspaceManagedSandboxSettingState": {
         "type": "object", "additionalProperties": false,

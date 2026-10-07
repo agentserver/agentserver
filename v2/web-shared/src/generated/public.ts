@@ -939,7 +939,7 @@ export interface components {
             changed: boolean;
         };
         /** @enum {string} */
-        ManagedSandboxRegion: "cn" | "boe" | "i18n-bd" | "i18n-tt";
+        ManagedSandboxRegion: "cn" | "boe" | "i18n-bd" | "i18n-tt" | "sg";
         WorkspaceManagedSandboxSettingState: {
             workspaceId: components["schemas"]["UUID"];
             region: components["schemas"]["ManagedSandboxRegion"];

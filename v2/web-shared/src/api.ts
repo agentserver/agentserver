@@ -428,7 +428,7 @@ function validateManagedSandboxRegions(value: ManagedSandboxRegion[]): ManagedSa
 }
 
 function managedSandboxRegion(value: unknown): value is ManagedSandboxRegion {
-  return value === "cn" || value === "boe" || value === "i18n-bd" || value === "i18n-tt"
+  return value === "cn" || value === "boe" || value === "i18n-bd" || value === "i18n-tt" || value === "sg"
 }
 
 function validateMember(value: WorkspaceMember): WorkspaceMember {

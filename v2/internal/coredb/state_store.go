@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
+
 	"github.com/jackc/pgx/v5"
 )
 
@@ -16,8 +18,35 @@ type TransactionDatabase interface {
 // StateStore is the only PostgreSQL write boundary for Phase 1 run and
 // execution state.
 type StateStore struct {
-	database TransactionDatabase
-	schema   string
+	database             TransactionDatabase
+	schema               string
+	managedDefaultRegion string
+	managedProfileIDs    []string
+}
+
+// WithManagedSandboxCatalog configures deployment-owned shared profile IDs,
+// not user-supplied environment authority. Per-run/operation ownership remains
+// bound to the session's workspace in managed_sandboxes and dispatch checks.
+func (s *StateStore) WithManagedSandboxCatalog(catalog *managedsandboxprofile.Catalog) *StateStore {
+	copy := *s
+	copy.managedDefaultRegion = ""
+	copy.managedProfileIDs = nil
+	if catalog != nil {
+		copy.managedDefaultRegion = catalog.DefaultRegion()
+		for _, binding := range catalog.Bindings() {
+			if binding.Region == managedsandboxprofile.RegionSG {
+				copy.managedProfileIDs = append(copy.managedProfileIDs, binding.EnvironmentID)
+			}
+		}
+	}
+	return &copy
+}
+
+func (s *StateStore) defaultManagedRegion() string {
+	if s.managedDefaultRegion != "" {
+		return s.managedDefaultRegion
+	}
+	return managedsandboxprofile.DefaultRegion
 }
 
 // NewStateStore constructs a production store against agentserver_v2.

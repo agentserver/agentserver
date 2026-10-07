@@ -37,6 +37,7 @@ type ProviderSandbox struct {
 }
 
 type CreateSandboxRequest struct {
+	Generation int64
 	// SessionRef is empty when the provider assigns its own session identity.
 	// It is retained for providers that support caller-assigned identities and
 	// for adopting a previously observed create result.
@@ -56,6 +57,7 @@ type CreateSandboxRequest struct {
 // values as non-secret provider metadata and perform an exact lookup. More than
 // one match is an error: callers must never guess which sandbox to adopt.
 type FindSandboxRequest struct {
+	Generation     int64
 	SandboxID      string
 	IdempotencyKey string
 	WorkspaceID    string

@@ -120,6 +120,10 @@ func releaseLockMatches(document ConfigDocument, lock ReleaseLock) bool {
 // config validation. The checked-in example remains useful for schema and
 // renderer tests, but it can never be promoted into a production Chart.
 func validateManagedReleaseEvidence(document ConfigDocument) error {
+	if document.Managed.Provider == "k8s" {
+		_, err := validateKubernetesManagedExecutor(document.Managed, document)
+		return err
+	}
 	if !document.Managed.Enabled {
 		return errors.New("managed executor must be enabled for the production release")
 	}

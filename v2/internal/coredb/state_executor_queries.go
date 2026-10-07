@@ -113,11 +113,12 @@ SELECT env.id::text,
        env.insecure_dev,
        env.version,
        sandbox.id::text,
-       sandbox.generation
+       sandbox.generation,
+       env.backend_kind
 FROM %s AS env
 JOIN %s AS executor ON executor.id = env.executor_id
 JOIN %s AS sandbox
-  ON sandbox.workspace_id = executor.workspace_id
+  ON (sandbox.workspace_id = executor.workspace_id OR env.backend_kind = 'k8s')
  AND sandbox.session_id = $2
  AND sandbox.environment_id = env.id
 JOIN %s AS activity
@@ -125,9 +126,10 @@ JOIN %s AS activity
  AND activity.target_generation = sandbox.generation
  AND activity.run_attempt_id = $3
  AND activity.run_attempt_generation = $4
-WHERE executor.workspace_id = $1
+WHERE sandbox.workspace_id = $1
   AND executor.status <> 'revoked'
-  AND env.backend_kind = 'tae'
+  AND env.backend_kind IN ('tae', 'k8s')
+  AND sandbox.provider_kind = env.backend_kind
   AND env.status = 'online'
   AND sandbox.desired_state = 'ready'
   AND sandbox.observed_state = 'ready'
@@ -155,6 +157,7 @@ LIMIT %d`, s.table("executor_environments"), s.table("executors"), s.table("mana
 					&environment.EnvironmentVersion,
 					&environment.TargetID,
 					&environment.TargetGeneration,
+					&environment.BackendKind,
 				); err != nil {
 					return nil, databaseError(operation+" scan managed environment", err)
 				}
@@ -162,7 +165,6 @@ LIMIT %d`, s.table("executor_environments"), s.table("executors"), s.table("mana
 					return nil, databaseError(operation+" validate managed root descriptor", err)
 				}
 				environment.RootDescriptor = append(json.RawMessage(nil), rootDescriptor...)
-				environment.BackendKind = DispatchTargetTAE
 				result = append(result, environment)
 				if len(result) > MaxListedExecutorEnvironments {
 					return nil, commandError(ErrorConflict, operation, "workspace", query.WorkspaceID, "online environment result exceeds the Phase 1 bound; use an executor filter")

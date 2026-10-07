@@ -141,6 +141,7 @@ var materialProfileFiles = map[string][]string{
 		"ca.crt", "tls.crt", "tls.key", "sandbox-capability-keyring.json",
 		"bytecloud-access-key-id", "bytecloud-secret-access-key",
 	},
+	"sandbox-gateway-k8s":          {"ca.crt", "tls.crt", "tls.key", "sandbox-capability-keyring.json", "runtime-ca.crt", "runtime-client.crt", "runtime-client.key"},
 	materialProfileTAENetworkProbe: {"bytecloud-access-key-id", "bytecloud-secret-access-key"},
 	materialProfileEgressAuthorizer: {
 		"ca.crt", "tls.crt", "tls.key", "egress-placeholder-keyring.json",

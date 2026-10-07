@@ -25,12 +25,14 @@ const (
 )
 
 type managedEnvironmentProfileDocument struct {
-	Version       int                                     `json:"version"`
-	WorkspaceID   string                                  `json:"workspaceId"`
-	ExecutorID    string                                  `json:"executorId"`
-	EnvironmentID string                                  `json:"environmentId"`
-	Root          managedEnvironmentRootDocument          `json:"root"`
-	Runtime       managedEnvironmentLegacyRuntimeDocument `json:"runtime"`
+	MigrateAllWorkspaceRegions bool                                    `json:"migrateAllWorkspaceRegions,omitempty"`
+	BackendKind                string                                  `json:"backendKind,omitempty"`
+	Version                    int                                     `json:"version"`
+	WorkspaceID                string                                  `json:"workspaceId"`
+	ExecutorID                 string                                  `json:"executorId"`
+	EnvironmentID              string                                  `json:"environmentId"`
+	Root                       managedEnvironmentRootDocument          `json:"root"`
+	Runtime                    managedEnvironmentLegacyRuntimeDocument `json:"runtime"`
 }
 
 type managedEnvironmentRootDocument struct {
@@ -107,7 +109,9 @@ func loadManagedEnvironmentProfile(configPath string) (coredb.ManagedEnvironment
 		return coredb.ManagedEnvironmentProfile{}, err
 	}
 	return coredb.ManagedEnvironmentProfile{
-		WorkspaceID: document.WorkspaceID, ExecutorID: document.ExecutorID,
+		MigrateAllWorkspaceRegions: document.MigrateAllWorkspaceRegions,
+		BackendKind:                document.BackendKind,
+		WorkspaceID:                document.WorkspaceID, ExecutorID: document.ExecutorID,
 		EnvironmentID: document.EnvironmentID, RootDescriptor: descriptor,
 		CodexRelease: document.Runtime.CodexRelease,
 		CodexCommit:  document.Runtime.CodexCommit, CodexSHA256: codexDigest,
@@ -115,6 +119,10 @@ func loadManagedEnvironmentProfile(configPath string) (coredb.ManagedEnvironment
 }
 
 func validateManagedEnvironmentProfileDocument(document managedEnvironmentProfileDocument) error {
+	if document.MigrateAllWorkspaceRegions&&document.BackendKind!="k8s"{return errors.New("workspace region migration requires Kubernetes deployment")}
+	if document.BackendKind != "" && document.BackendKind != "tae" && document.BackendKind != "k8s" {
+		return errors.New("unsupported managed environment backend")
+	}
 	if document.Version != managedEnvironmentProfileVersion {
 		return fmt.Errorf("managed environment profile version must be %d", managedEnvironmentProfileVersion)
 	}

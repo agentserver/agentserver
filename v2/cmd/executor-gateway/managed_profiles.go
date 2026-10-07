@@ -25,15 +25,17 @@ type managedSandboxGatewayProfilesDocument struct {
 }
 
 type managedSandboxGatewayProfileDocument struct {
-	Region                   string `json:"region"`
-	EnvironmentID            string `json:"environmentId"`
-	SandboxGatewayURL        string `json:"sandboxGatewayUrl"`
-	SandboxGatewayServerName string `json:"sandboxGatewayServerName,omitempty"`
-	SandboxTTL               string `json:"sandboxTtl"`
-	ActivityTTL              string `json:"activityTtl"`
+	BackendKind              executionbackend.Kind `json:"backendKind,omitempty"`
+	Region                   string                `json:"region"`
+	EnvironmentID            string                `json:"environmentId"`
+	SandboxGatewayURL        string                `json:"sandboxGatewayUrl"`
+	SandboxGatewayServerName string                `json:"sandboxGatewayServerName,omitempty"`
+	SandboxTTL               string                `json:"sandboxTtl"`
+	ActivityTTL              string                `json:"activityTtl"`
 }
 
 type configuredManagedSandboxGatewayProfile struct {
+	kind         executionbackend.Kind
 	binding      managedsandboxprofile.Binding
 	baseURL      string
 	serverName   string
@@ -160,7 +162,11 @@ func configureProfiledTAEExecution(
 			return nil, nil, nil, nil, nil, clientErr
 		}
 		clients = append(clients, httpClient)
-		backend, clientErr := executorgateway.NewTAEBackendWithLogger(profile.baseURL, httpClient, backendTokens, slog.Default())
+		kind := profile.kind
+		if kind == "" {
+			kind = executionbackend.KindTAE
+		}
+		backend, clientErr := executorgateway.NewManagedBackend(kind, profile.baseURL, httpClient, backendTokens, slog.Default())
 		if clientErr != nil {
 			closeClients()
 			return nil, nil, nil, nil, nil, clientErr
@@ -186,7 +192,11 @@ func configureProfiledTAEExecution(
 		fencerByRegion[profile.binding.Region] = fencer
 		acquirerByRegion[profile.binding.Region] = acquirer
 	}
-	backendRouter, err := executorgateway.NewTAEBackendRouter(backendByEnvironment)
+	kind := profiles[0].kind
+	if kind == "" {
+		kind = executionbackend.KindTAE
+	}
+	backendRouter, err := executorgateway.NewManagedBackendRouter(kind, backendByEnvironment)
 	if err != nil {
 		closeClients()
 		return nil, nil, nil, nil, nil, err
@@ -228,6 +238,16 @@ func parseManagedSandboxGatewayProfiles(raw []byte, mode gatewayServeMode) ([]co
 	regions := make(map[string]struct{}, len(document.Profiles))
 	environments := make(map[string]struct{}, len(document.Profiles))
 	for _, source := range document.Profiles {
+		kind := source.BackendKind
+		if kind == "" {
+			kind = executionbackend.KindTAE
+		}
+		if !kind.Managed() || (kind == executionbackend.KindKubernetes && source.Region != managedsandboxprofile.RegionSG) || (kind == executionbackend.KindTAE && source.Region == managedsandboxprofile.RegionSG) {
+			return nil, errors.New("managed provider kind and region do not match")
+		}
+		if len(profiles) > 0 && profiles[0].kind != kind {
+			return nil, errors.New("mixed managed providers require separate router configuration")
+		}
 		binding := managedsandboxprofile.Binding{
 			Region: source.Region, EnvironmentID: source.EnvironmentID,
 		}
@@ -262,6 +282,7 @@ func parseManagedSandboxGatewayProfiles(raw []byte, mode gatewayServeMode) ([]co
 			return nil, fmt.Errorf("managed sandbox region %q: %w", binding.Region, err)
 		}
 		profiles = append(profiles, configuredManagedSandboxGatewayProfile{
+			kind:    kind,
 			binding: binding, baseURL: baseURL, serverName: serverName, provisioning: provisioning,
 		})
 		regions[binding.Region] = struct{}{}
@@ -306,6 +327,7 @@ func newManagedSandboxGatewayHTTPClient(
 		if err != nil {
 			return nil, fmt.Errorf("configure sandbox-gateway client for region %q: %w", profile.binding.Region, err)
 		}
+		if profile.kind==executionbackend.KindKubernetes{client.Transport.(*http.Transport).ResponseHeaderTimeout=4*time.Minute}
 		return client, nil
 	}
 	if mode != gatewayServeInsecureDevelopment {

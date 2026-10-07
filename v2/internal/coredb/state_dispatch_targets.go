@@ -69,7 +69,7 @@ func (s *StateStore) requireLiveDispatchTarget(
 	switch target.Kind {
 	case DispatchTargetAgentX:
 		return s.requireLiveExecutorConnection(ctx, transaction, operation, execution, target.Generation)
-	case DispatchTargetTAE:
+	case DispatchTargetTAE, DispatchTargetKubernetes:
 		return s.requireLiveManagedSandbox(ctx, transaction, operation, run, attempt, execution, target)
 	default:
 		return commandError(ErrorInvalidArgument, operation, "execution", execution.ID, "unsupported dispatch target kind")
@@ -104,7 +104,7 @@ SELECT sandbox.workspace_id::text,
              AND activity.lease_expires_at > pg_catalog.clock_timestamp()
        )
 FROM %s AS sandbox
-WHERE sandbox.id = $1
+WHERE sandbox.id = $1 AND sandbox.provider_kind = $4
 FOR SHARE`, s.table("managed_sandbox_activities"), s.table("managed_sandboxes"))
 	var workspaceID string
 	var sessionID string
@@ -114,7 +114,7 @@ FOR SHARE`, s.table("managed_sandbox_activities"), s.table("managed_sandboxes"))
 	var observedState string
 	var unexpired *bool
 	var activityLive bool
-	err := transaction.QueryRow(ctx, query, target.ID, attempt.ID, attempt.Generation).Scan(
+	err := transaction.QueryRow(ctx, query, target.ID, attempt.ID, attempt.Generation, target.Kind).Scan(
 		&workspaceID, &sessionID, &environmentID, &generation,
 		&desiredState, &observedState, &unexpired, &activityLive,
 	)

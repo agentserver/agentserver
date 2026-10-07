@@ -104,6 +104,11 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 			sandboxIngress := ingressFromComponents([]string{executorComponent}, gateway.Port)
 			sandboxEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
 			sandboxEgress = append(sandboxEgress, dns...)
+			if document.Managed.Provider == "k8s" {
+				k := document.Managed.Kubernetes
+				sandboxEgress = append(sandboxEgress, externalEgress(k.APIEgress)...)
+				sandboxEgress = append(sandboxEgress, namespacedPodTCPEgress(k.Namespace, map[string]string{"app.kubernetes.io/name": "agentserver-sandbox-runtime"}, 8443))
+			}
 			if profile.Proxy != nil {
 				sandboxEgress = append(sandboxEgress, namespacedPodTCPEgress(
 					profile.Proxy.Namespace, profile.Proxy.PodSelector, profile.Proxy.Port,

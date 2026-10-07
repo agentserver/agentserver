@@ -17,12 +17,13 @@ const (
 	RegionBOE     = "boe"
 	RegionI18NBD  = "i18n-bd"
 	RegionI18NTT  = "i18n-tt"
+	RegionSG      = "sg"
 	DefaultRegion = RegionI18NTT
 )
 
 var (
 	regionSet = map[string]struct{}{
-		RegionCN: {}, RegionBOE: {}, RegionI18NBD: {}, RegionI18NTT: {},
+		RegionCN: {}, RegionBOE: {}, RegionI18NBD: {}, RegionI18NTT: {}, RegionSG: {},
 	}
 	uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
@@ -86,7 +87,7 @@ func ParseCatalog(raw []byte) (*Catalog, error) {
 }
 
 func NewCatalog(defaultRegion string, bindings []Binding) (*Catalog, error) {
-	if defaultRegion != DefaultRegion {
+	if defaultRegion != DefaultRegion && defaultRegion != RegionSG {
 		return nil, fmt.Errorf("managed sandbox default region must be %q", DefaultRegion)
 	}
 	if len(bindings) < 1 || len(bindings) > len(regionSet) {
@@ -133,7 +134,7 @@ func (catalog *Catalog) Bindings() []Binding {
 		return nil
 	}
 	result := make([]Binding, 0, len(catalog.bindings))
-	for _, region := range Regions() {
+	for _, region := range append(Regions(), RegionSG) {
 		if binding, installed := catalog.bindings[region]; installed {
 			result = append(result, binding)
 		}

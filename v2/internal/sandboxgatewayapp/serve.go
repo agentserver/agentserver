@@ -47,7 +47,8 @@ func Serve(ctx context.Context, config Config, provider sandboxgateway.Provider,
 	}
 	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	service, err := sandboxgateway.NewService(sandboxgateway.Config{
-		Core: coreClient, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
+		ProviderKind: config.ProviderKind,
+		Core:         coreClient, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
 		ProviderRegion: config.ProviderRegion, ProviderPSM: config.ProviderPSM,
 		IdleTTL: config.IdleTTL, EnsureTimeout: config.EnsureTimeout, EnsurePollInterval: config.EnsurePoll,
 		Root: config.Root, Platform: config.Platform,
@@ -83,8 +84,8 @@ func Serve(ctx context.Context, config Config, provider sandboxgateway.Provider,
 		return fmt.Errorf("initial managed sandbox reconcile: %w", err)
 	}
 	ready.ready.Store(true)
-	fmt.Fprintf(stdout, "sandbox-gateway serve: provider tae; region %s; psm %s; endpoint https://%s; reconcile %s\n",
-		config.ProviderRegion, config.ProviderPSM, listener.Addr(), config.ReconcileInterval)
+	fmt.Fprintf(stdout, "sandbox-gateway serve: provider %s; region %s; scope %s; endpoint https://%s; reconcile %s\n",
+		config.ProviderKind, config.ProviderRegion, config.ProviderPSM, listener.Addr(), config.ReconcileInterval)
 	return run(ctx, service, server, listener, ready, logger, config.ReconcileInterval, config.ReconcileLimit)
 }
 

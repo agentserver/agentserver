@@ -671,7 +671,7 @@ func validateOperationTransitionIdentity(operationID, executionID, runID, attemp
 	if target.Kind == DispatchTargetAgentX && connectionGeneration != target.Generation {
 		return errors.New("agentx connection_generation must equal target_generation")
 	}
-	if target.Kind == DispatchTargetTAE && connectionGeneration != 0 {
+	if isManagedProvider(target.Kind) && connectionGeneration != 0 {
 		return errors.New("TAE target must not carry connection_generation")
 	}
 	return nil

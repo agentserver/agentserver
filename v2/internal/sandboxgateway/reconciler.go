@@ -30,7 +30,7 @@ func (service *Service) ReconcileOnce(ctx context.Context, limit int) (Reconcile
 	report := ReconcileReport{}
 	var reconcileErrors []error
 	for _, state := range candidates.Sandboxes {
-		if state.ProviderKind != "tae" || state.ProviderRegion != service.providerRegion || state.ProviderPSM != service.providerPSM {
+		if state.ProviderKind != string(service.providerKind) || state.ProviderRegion != service.providerRegion || state.ProviderPSM != service.providerPSM {
 			continue
 		}
 		if !service.workspaceAllowed(state.WorkspaceID) {

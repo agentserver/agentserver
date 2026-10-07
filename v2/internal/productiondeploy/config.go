@@ -434,7 +434,7 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if !strings.HasPrefix(document.Images.Hydra, ProductionHydraImage+"@sha256:") {
 		return LoadedConfig{}, fmt.Errorf("images.hydra must use the SG production repository %s", ProductionHydraImage)
 	}
-	if !strings.HasPrefix(document.Images.ManagedSandbox, ProductionManagedSandboxImage+"@sha256:") {
+	if document.Managed.Provider != "k8s" && !strings.HasPrefix(document.Images.ManagedSandbox, ProductionManagedSandboxImage+"@sha256:") {
 		return LoadedConfig{}, fmt.Errorf("images.managedSandbox must use the SG production repository %s", ProductionManagedSandboxImage)
 	}
 	imageSet := []string{document.Images.Service, document.Images.Harness, document.Images.Hydra, document.Images.ManagedSandbox}

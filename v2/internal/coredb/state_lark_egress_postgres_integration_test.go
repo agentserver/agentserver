@@ -25,7 +25,15 @@ type managedLarkPostgresFixture struct {
 }
 
 func TestPostgreSQLByteCloudCredentialUsesProcessEnvironmentIndependentOfLarkMode(t *testing.T) {
-	fixture := newManagedLarkPostgresFixture(t, 849_000)
+	testByteCloudProcessCredential(t, DispatchTargetTAE)
+}
+
+func TestPostgreSQLKubernetesByteCloudCredentialUsesProcessEnvironment(t *testing.T) {
+	testByteCloudProcessCredential(t, DispatchTargetKubernetes)
+}
+
+func testByteCloudProcessCredential(t *testing.T, kind string) {
+	fixture := newManagedCredentialPostgresFixture(t, 849_000, kind)
 	bindingID := stateTestUUID(849_600)
 	quotedSchema := quoteIdentifier(fixture.schema)
 	insertBinding := fmt.Sprintf(`INSERT INTO %s.workspace_credential_bindings (
@@ -423,6 +431,10 @@ FOR EACH ROW EXECUTE FUNCTION %s()`, quotedSchema, functionName)); err != nil {
 }
 
 func newManagedLarkPostgresFixture(t *testing.T, seed int) managedLarkPostgresFixture {
+	return newManagedCredentialPostgresFixture(t, seed, DispatchTargetTAE)
+}
+
+func newManagedCredentialPostgresFixture(t *testing.T, seed int, kind string) managedLarkPostgresFixture {
 	t.Helper()
 	store, pool, schema := newPostgresStateStore(t)
 	workspaceID := stateTestUUID(seed)
@@ -483,6 +495,29 @@ func newManagedLarkPostgresFixture(t *testing.T, seed int) managedLarkPostgresFi
 
 	reserve := managedSandboxTestReserve(seed+100, running)
 	reserve.ProviderPSM = "prod.tae.agent-gateway"
+	if kind == DispatchTargetKubernetes {
+		reserve.ProviderKind = kind
+		reserve.ProviderPSM = "sg-managed-cli"
+		profile := validManagedEnvironmentProfile()
+		profile.BackendKind = kind
+		profile.WorkspaceID = workspaceID
+		profile.EnvironmentID = reserve.EnvironmentID
+		profile.ExecutorID = stateTestUUID(seed + 102)
+		if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.executors (id,workspace_id,status) VALUES ($1,$2,'enrolling')", quotedSchema), profile.ExecutorID, workspaceID); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := pool.Begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := insertManagedEnvironmentProfile(t.Context(), tx, quotedSchema, profile); err != nil {
+			tx.Rollback(t.Context())
+			t.Fatal(err)
+		}
+		if err := tx.Commit(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	reserved, err := store.ReserveManagedSandbox(t.Context(), reserve)
 	if err != nil {
 		t.Fatal(err)
@@ -525,7 +560,9 @@ func newManagedLarkPostgresFixture(t *testing.T, seed int) managedLarkPostgresFi
 	if err != nil {
 		t.Fatal(err)
 	}
-	begin := executionTestBeginCommand(t, seed+220, running, preparedOperation, 0)
+	// PrepareOperation already allocates its event at seed+210+10. A new
+	// dispatch needs a distinct event/outbox identity, even in a test fixture.
+	begin := executionTestBeginCommand(t, seed+230, running, preparedOperation, 0)
 	begin.Target = ready.Target()
 	dispatch, err := store.BeginOperationDispatch(t.Context(), begin)
 	if err != nil || !dispatch.Began {

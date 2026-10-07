@@ -36,8 +36,9 @@ const (
 	OperationEffectRead     = "read"
 	OperationEffectMutation = "mutation"
 
-	DispatchTargetAgentX = "agentx"
-	DispatchTargetTAE    = "tae"
+	DispatchTargetAgentX     = "agentx"
+	DispatchTargetTAE        = "tae"
+	DispatchTargetKubernetes = "k8s"
 )
 
 type DispatchTarget struct {

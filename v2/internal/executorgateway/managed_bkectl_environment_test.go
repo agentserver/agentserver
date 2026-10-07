@@ -7,10 +7,19 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudAKSKForBkectl(t *testing.T) {
+	testBkectlProcessCredential(t, executionbackend.KindTAE)
+}
+
+func TestKubernetesManagedEnvironmentIssuerInjectsByteCloudAKSKForBkectl(t *testing.T) {
+	testBkectlProcessCredential(t, executionbackend.KindKubernetes)
+}
+
+func testBkectlProcessCredential(t *testing.T, kind executionbackend.Kind) {
 	now := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
 	authority := ManagedCredentialAuthority{
 		CredentialMode:   managedcredential.ModeProcessEnv,
@@ -50,6 +59,7 @@ func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudAKSKForBkectl(t *testi
 	}
 
 	request := testManagedLarkEnvironmentRequest(now)
+	request.Target.Kind = kind
 	request.Executable = bkectlpolicy.Executable
 	request.Arguments = []string{"--region", "cn", "bytetree", "node", "get", "--id", "4428303", "--json"}
 	environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request)

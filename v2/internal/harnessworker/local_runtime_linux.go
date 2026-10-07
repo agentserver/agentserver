@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/agentserver/agentserver/v2/internal/codexmodelcatalog"
+
 	"github.com/agentserver/agentserver/v2/internal/harnesslayout"
 	"golang.org/x/sys/unix"
 )
@@ -41,6 +43,7 @@ func installLocalAppRuntime(
 	ctx context.Context,
 	root string,
 	config []byte,
+	modelCatalog []byte,
 	restored *RestoredCheckpoint,
 	appUID, appGID uint32,
 ) (paths localAppRuntimePaths, rolloutPath string, err error) {
@@ -92,6 +95,22 @@ func installLocalAppRuntime(
 		}
 		if closeErr != nil {
 			return fmt.Errorf("close app-owned Codex config: %w", closeErr)
+		}
+		if len(modelCatalog) != 0 {
+			catalogFile, err := os.OpenFile(filepath.Join(paths.CodexHome, codexmodelcatalog.FileName), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
+			if err != nil {
+				return fmt.Errorf("create direct model catalog: %w", err)
+			}
+			written, writeErr := catalogFile.Write(modelCatalog)
+			if writeErr == nil && written != len(modelCatalog) {
+				writeErr = io.ErrShortWrite
+			}
+			if writeErr == nil {
+				writeErr = catalogFile.Sync()
+			}
+			if err := errors.Join(writeErr, catalogFile.Close()); err != nil {
+				return fmt.Errorf("install direct model catalog: %w", err)
+			}
 		}
 		if restored != nil {
 			rolloutPath, err = restoreCheckpointRollout(paths.CodexHome, restored.Manifest.Files[0], rolloutSource)

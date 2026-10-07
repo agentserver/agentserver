@@ -15,6 +15,7 @@ func installLocalAppRuntime(
 	context.Context,
 	string,
 	[]byte,
+	[]byte,
 	*RestoredCheckpoint,
 	uint32,
 	uint32,

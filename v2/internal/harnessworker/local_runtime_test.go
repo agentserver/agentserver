@@ -12,12 +12,13 @@ import (
 func TestRenderCodexConfigContainsOnlyFrozenModelRouteAndDisabledLocalTools(t *testing.T) {
 	catalog := runnerTestCatalog(t)
 	manifest, _, _ := oneShotSignedManifest(t, catalog, []byte(oneShotPrompt))
-	raw, err := renderCodexConfig(CodexConfigProfileStable0160, manifest)
+	raw, err := renderCodexConfig(CodexConfigProfileStable0160, manifest, "/runtime/codex-home/model-catalog.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	config := string(raw)
 	for _, wanted := range []string{
+		`model_catalog_json = "/runtime/codex-home/model-catalog.json"`,
 		`model = "gpt-5"`,
 		`model_provider = "llmproxy"`,
 		`base_url = "https://llmproxy.agentserver.test/v1"`,

@@ -1,5 +1,20 @@
 # Stock Codex 0.160.1 upgrade
 
+## Production model routing correction
+
+The initial upgrade probes used synthetic model metadata and missed that stock
+`gpt-5.6-sol` now selects `code_mode_only` and Responses Lite independently of
+the disabled feature flags. Without code-mode-host this hides the executor
+tools, before any sandbox acquisition. A Ready deployment did not detect it.
+
+The Harness now installs an application-owned model catalog on every cold
+start/resume. It preserves stock 0.160.1 metadata except `tool_mode=direct` and
+`use_responses_lite=false`, keeping the existing frozen dynamic executor catalog
+and standard Responses wire protocol. It does not enable a new local code
+execution path, change models, alter permission mode, or expand sandbox access.
+`TestAppServerProductionModelListsEnvironments` covers the actual model slug,
+structured tool exposure and a complete Codex → worker → MCP → model round trip.
+
 SG deployed on 2026-10-07, Helm revision 163, chart
 `0.1.0-config.d1af48350c9e6`, application source `95df94fb` and successful
 GHCR publication run `37643547331`. Both live Harness replicas report

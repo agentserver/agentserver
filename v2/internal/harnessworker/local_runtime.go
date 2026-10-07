@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/agentserver/agentserver/v2/internal/codexmodelcatalog"
+
 	"github.com/agentserver/agentserver/v2/internal/harnesslayout"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
@@ -173,11 +175,19 @@ func (runtime *localPreparedWorkerRuntime) Finalize(
 		manifest.CheckpointAllowlistVersion != runtime.config.RuntimeManifest.CheckpointAllowlistVersion {
 		return PreparedAppServerRuntime{}, errors.New("local worker runtime authority changed after preparation")
 	}
-	configBytes, err := renderCodexConfig(runtime.config.CodexConfigProfile, manifest)
+	catalogPath := filepath.Join(runtime.appRoot, harnesslayout.CodexHomeDirectory, codexmodelcatalog.FileName)
+	configBytes, err := renderCodexConfig(runtime.config.CodexConfigProfile, manifest, catalogPath)
 	if err != nil {
 		return PreparedAppServerRuntime{}, err
 	}
-	paths, rolloutPath, err := installLocalAppRuntime(ctx, runtime.appRoot, configBytes, restored, runtime.config.AppUID, runtime.config.AppGID)
+	var modelCatalog []byte
+	if runtime.config.CodexConfigProfile == CodexConfigProfileStable0160 {
+		modelCatalog, err = codexmodelcatalog.Direct()
+		if err != nil {
+			return PreparedAppServerRuntime{}, fmt.Errorf("prepare direct model catalog: %w", err)
+		}
+	}
+	paths, rolloutPath, err := installLocalAppRuntime(ctx, runtime.appRoot, configBytes, modelCatalog, restored, runtime.config.AppUID, runtime.config.AppGID)
 	clear(configBytes)
 	if err != nil {
 		return PreparedAppServerRuntime{}, err
@@ -310,12 +320,23 @@ func valueOrDefault(value, fallback int) int {
 	return value
 }
 
-func renderCodexConfig(profile string, manifest runmanifest.Manifest) ([]byte, error) {
+func renderCodexConfig(profile string, manifest runmanifest.Manifest, catalogPath string) ([]byte, error) {
 	if profile != CodexConfigProfileStable0146 && profile != CodexConfigProfileStable0160 {
 		return nil, errors.New("unsupported Codex config profile")
 	}
 	if err := manifest.Validate(); err != nil {
 		return nil, err
+	}
+	catalogConfig := ""
+	if profile == CodexConfigProfileStable0160 {
+		if !filepath.IsAbs(catalogPath) || filepath.Clean(catalogPath) != catalogPath || strings.ContainsRune(catalogPath, 0) {
+			return nil, errors.New("direct model catalog path must be absolute and clean")
+		}
+		quoted, err := tomlBasicString(catalogPath)
+		if err != nil {
+			return nil, err
+		}
+		catalogConfig = "model_catalog_json = " + quoted + "\n"
 	}
 	model, err := tomlBasicString(manifest.Model.Model)
 	if err != nil {
@@ -329,7 +350,7 @@ func renderCodexConfig(profile string, manifest runmanifest.Manifest) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	config := fmt.Sprintf(`model = %s
+	config := fmt.Sprintf(`%smodel = %s
 approval_policy = "never"
 approvals_reviewer = "user"
 sandbox_mode = "read-only"
@@ -386,7 +407,7 @@ standalone_web_search = false
 tool_suggest = false
 unified_exec = false
 workspace_dependencies = false
-`, model, provider, provider, endpoint, AppServerModelCapabilityEnvironment)
+`, catalogConfig, model, provider, provider, endpoint, AppServerModelCapabilityEnvironment)
 	if len(config) > maximumCodexConfigBytes {
 		return nil, fmt.Errorf("rendered Codex config exceeds %d bytes", maximumCodexConfigBytes)
 	}

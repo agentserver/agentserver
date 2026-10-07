@@ -163,7 +163,7 @@ jobs:
           AGENTSERVER_CODEX_BIN="$runtime_dir/bundle/bin/codex" \
           AGENTSERVER_PREVIOUS_CODEX_BIN="$previous_dir/codex-x86_64-unknown-linux-musl" \
           go -C v2 test ./conformance/codex -count=1 -v \
-            -run 'TestAppServer(A01|A03Dynamic|A07(Harness|InterruptClearsPendingDynamic)|A09|A11|ModelReceivesDecoded|TemporaryTitle)'
+            -run 'TestAppServer(A01|A03Dynamic|A07(Harness|InterruptClearsPendingDynamic)|A09|A11|ModelReceivesDecoded|TemporaryTitle|ProductionModel)'
           rm -- "$previous_dir/codex.tar.gz" "$previous_dir/codex-x86_64-unknown-linux-musl"
           rmdir "$previous_dir"
           printf 'CODEX_RUNTIME_DIRECTORY=%s\n' "$runtime_dir" >>"$GITHUB_ENV"

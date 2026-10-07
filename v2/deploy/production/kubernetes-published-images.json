@@ -6,6 +6,9 @@
   "serviceRepairRun": 37617346414,
   "harnessRepairRevision": "55224f2c14817026354dc812832c7b631b9a0cf0",
   "harnessRepairRun": 37617346414,
+  "stagedServiceRun": 37620178543,
+  "deployedChartVersion": "0.1.0-config.db68f1d7511ba",
+  "deployedHelmRevision": 162,
   "previousHarnessImage": "ghcr.io/agentserver/v2-harness@sha256:76fab81aa98416a35d91d1b64b6ecc6468c59d6174564761698c8840f1576772",
   "images": {
     "service": "ghcr.io/agentserver/v2-service@sha256:ab62fc5f5e53f61d78789a35df95211a90fb142e44e54b78b17235b95926543f",

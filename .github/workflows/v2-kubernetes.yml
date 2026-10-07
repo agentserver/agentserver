@@ -52,9 +52,13 @@ jobs:
           printf '%s\n' 'GIT_TERMINAL_PROMPT=0' 'GOPRIVATE=code.byted.org' 'GONOSUMDB=code.byted.org' >>"$GITHUB_ENV"
       - name: Test services and Kubernetes provider
         run: |
+          if ! command -v gcc >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends gcc libc6-dev
+          fi
           go -C v2 test ./...
           go -C v2/providers/kubernetes vet ./...
-          go -C v2/providers/kubernetes test -race ./...
+          CGO_ENABLED=1 go -C v2/providers/kubernetes test -race ./...
       - name: Download the previously deployed runtime configuration
         uses: actions/download-artifact@v4
         with:

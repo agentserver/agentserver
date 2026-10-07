@@ -1,3 +1,7 @@
 [submodule "opencode"]
 	path = opencode
 	url = https://github.com/agentserver/opencode.git
+[submodule "third_party/deepseek-harness"]
+	path = third_party/deepseek-harness
+	url = https://github.com/agentserver/deepseek-harness.git
+	branch = feat/agentserver-web

@@ -3,6 +3,7 @@ package browsergateway
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -12,6 +13,12 @@ import (
 )
 
 func TestDSHProjectionWithShippedTrajectoryConsumer(t *testing.T) {
+	if _, err := os.Stat("../../dsh-web/dist/plugins/@deepseek-ai/dsh-client-ui-trajectory/client.js"); err != nil {
+		if os.Getenv("AGENTSERVER_REQUIRE_DSH_ASSETS") == "1" {
+			t.Fatal("build the pinned DSH frontend before release tests")
+		}
+		t.Skip("DSH frontend not built; run bash v2/dsh-web/build.sh")
+	}
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("Node is required for the shipped DSH consumer regression")

@@ -28,9 +28,9 @@ The configured workspace id is the DSH workspace presented to the browser. DSH s
 
 Session ids supplied by the DSH client must be canonical UUIDs, matching the Core v2 resource contract; when omitted, the facade allocates one.
 
-Canonical Core run events are translated to DSH session events in a process-local session projection. Completed transcript messages are reconstructed from Core's transcript endpoint; newly started runs are projected from the Core run-event cursor while the gateway remains alive.
+Canonical Core run events and committed prompts are replayed from the authenticated, paginated Core session journal. Live output and reconnect recovery use the same projection; every replica follows committed events even when another replica handled the prompt. Each independently settled model item has a distinct DSH step, and Assistant tool-call blocks own their execution lifecycle records.
 
-The embedded frontend and projection are v2-only. The release does not migrate or restore legacy DSH sessions; a browser-gateway restart does not recreate the old process-local active-run stream.
+The embedded frontend and projection are v2-only. The release does not migrate legacy DSH sessions. Frontend source is pinned by the DSH submodule and compiled during release; see [the frontend build](../dsh-web/README.md).
 
 ## Configuration
 
@@ -47,4 +47,4 @@ The configured workspace is an authority decision, not a client-selected path. S
 
 ## Current compatibility limits
 
-The facade intentionally returns explicit DSH errors for file attachments, fork, and unimplemented plugin-owned namespaces. Queue and steer prompts are accepted in a process-local FIFO while a Core run is active; they are not durable across gateway restarts. Session event projection is process-local; after a browser-gateway restart, the durable Core transcript is available but an already-running run cannot be resumed through DSH until a new prompt establishes a fresh cursor. While a run is active, Core Assistant deltas are projected to opted-in `session/follow` subscribers as DSH `assistant-stream` start/chunk/end frames; the completed `assistant/message` remains the durable settlement and embeds the compact stream for reconnect and history replay. These limits keep the adapter from inventing durable state or bypassing Core's run authority. Expanding them requires a corresponding Core resource or durable projection, not a wider reverse proxy.
+The facade intentionally returns explicit DSH errors for file attachments, fork, and unimplemented plugin-owned namespaces. Queue and steer prompts are accepted in a process-local FIFO while a Core run is active; pending prompts are not durable across gateway restarts. Committed history and active runs can be restored from the Core journal. Core Assistant deltas are projected to opted-in `session/follow` subscribers as DSH `assistant-stream` start/chunk/end frames; completed messages embed that stream for replay. Missing retained events fail explicitly rather than resetting cursor positions. Unsupported capabilities need corresponding Core resources, not frontend fallbacks or a wider reverse proxy.

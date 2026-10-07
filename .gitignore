@@ -11,6 +11,8 @@ AuthKey_*.p8
 .claude/worktrees/
 notebook/smoke-workspace/
 v2/.agentserver-v2-a04.*/
+v2/dsh-web/dist/*
+!v2/dsh-web/dist/.gitkeep
 
 # Generated from docs/api/openapi.yaml via `pnpm openapi:gen` —
 # never commit; CI and local dev regenerate on demand.

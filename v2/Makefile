@@ -42,6 +42,13 @@ web-check:
 web-test:
 	$(PNPM) web:test
 
+.PHONY: dsh-build dsh-check
+dsh-build:
+	bash dsh-web/build.sh
+
+dsh-check: dsh-build
+	AGENTSERVER_REQUIRE_DSH_ASSETS=1 $(GO) test ./dsh-web ./internal/browsergateway ./cmd/browser-gateway
+
 postgres-test:
 	@test -n "$$AGENTSERVER_V2_TEST_DATABASE_URL" || \
 		(printf '%s\n' 'AGENTSERVER_V2_TEST_DATABASE_URL is required'; exit 2)

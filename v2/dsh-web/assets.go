@@ -8,6 +8,8 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -24,9 +26,11 @@ var embedded embed.FS
 var bundle = mustBundle()
 
 type staticBundle struct {
-	files fs.FS
-	index []byte
-	count int
+	files           fs.FS
+	index           []byte
+	count           int
+	pluginResources map[string]string
+	err             error
 }
 
 func mustBundle() staticBundle {
@@ -36,7 +40,7 @@ func mustBundle() staticBundle {
 	}
 	index, err := fs.ReadFile(files, "index.html")
 	if err != nil {
-		panic(fmt.Sprintf("read embedded DSH index: %v", err))
+		return staticBundle{err: errors.New("DSH frontend is not built; run bash v2/dsh-web/build.sh before building browser-gateway")}
 	}
 	count := 0
 	_ = fs.WalkDir(files, ".", func(_ string, entry fs.DirEntry, walkErr error) error {
@@ -45,7 +49,28 @@ func mustBundle() staticBundle {
 		}
 		return walkErr
 	})
-	return staticBundle{files: files, index: withAuthenticationBootstrap(index), count: count}
+	resources := map[string]string{}
+	{
+		raw, readErr := fs.ReadFile(files, "plugin-resources.json")
+		if readErr != nil {
+			panic(fmt.Sprintf("open DSH plugin resource map: %v", readErr))
+		}
+		if err := json.Unmarshal(raw, &resources); err != nil {
+			panic(fmt.Sprintf("read DSH plugin resource map: %v", err))
+		}
+		if len(resources) == 0 {
+			panic("empty DSH plugin resource map")
+		}
+		for uri, name := range resources {
+			if !strings.HasPrefix(uri, "/plugins/") || !strings.HasPrefix(name, "plugins/") || !fs.ValidPath(name) {
+				panic("invalid DSH plugin resource mapping")
+			}
+			if _, err := fs.Stat(files, name); err != nil {
+				panic(fmt.Sprintf("DSH plugin resource missing: %s", name))
+			}
+		}
+	}
+	return staticBundle{files: files, index: withAuthenticationBootstrap(index), count: count, pluginResources: resources}
 }
 
 // Handler returns the DSH static bundle. API and WebSocket paths are mounted
@@ -58,6 +83,9 @@ func HandlerForOAuthOrigin(origin string) (http.Handler, error) {
 	if origin == "" {
 		return nil, fmt.Errorf("DSH OAuth origin is required")
 	}
+	if bundle.err != nil {
+		return nil, bundle.err
+	}
 	return assetHandler{contentSecurityPolicy: contentSecurityPolicy + " " + origin}, nil
 }
 
@@ -65,9 +93,27 @@ type assetHandler struct{ contentSecurityPolicy string }
 
 func (handler assetHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setSecurityHeaders(response.Header(), handler.contentSecurityPolicy)
+	if bundle.err != nil {
+		http.Error(response, bundle.err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		response.Header().Set("Allow", "GET, HEAD")
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if strings.HasPrefix(request.URL.Path, "/plugins/") || request.URL.Path == "/plugins" {
+		name, ok := bundle.pluginResources[request.URL.RequestURI()]
+		if !ok {
+			http.NotFound(response, request)
+			return
+		}
+		contents, err := fs.ReadFile(bundle.files, name)
+		if err != nil {
+			http.NotFound(response, request)
+			return
+		}
+		serveAsset(response, request, contents, "text/javascript; charset=utf-8", true)
 		return
 	}
 	cleaned := path.Clean(request.URL.Path)

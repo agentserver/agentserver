@@ -3,6 +3,7 @@ package productiondeploy
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,6 +74,11 @@ func TestKubernetesChartRendersExecutableGraphWithoutTAE(t *testing.T) {
 	for range 2 {
 		if err := WriteHelmChart(chart, destination); err != nil {
 			t.Fatalf("Kubernetes chart publication: %v", err)
+		}
+	}
+	if helm, err := exec.LookPath("helm"); err == nil {
+		if output, err := exec.Command(helm, "template", "agentserver-v2", destination, "--namespace", d.Namespace).CombinedOutput(); err != nil {
+			t.Fatalf("render Kubernetes chart with Helm: %v\n%s", err, output)
 		}
 	}
 	bundle, err := Render(loaded)

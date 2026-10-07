@@ -116,11 +116,16 @@ func TestLinuxLiveNoRuntimeMaterialAndNoBackgroundSurvivor(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("private"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if material := os.Getenv("AGENTSERVER_K8S_RUNTIME_LIVE_MATERIAL"); material != "" {
+		if _, err := os.Stat(material); err != nil {
+			t.Fatalf("live material fixture is not actually mounted: %v", err)
+		}
+	}
 	r := sandboxcontract.RunCommandRequest{Executable: "/bin/sh", WorkspaceAccess: "write", Arguments: []string{"-c", "test ! -e /var/run/agentserver/runtime-tls/tls.key && test ! -e '" + outside + "' && test ! -e /var/run/secrets/kubernetes.io/serviceaccount/token"}}
 	if out, err := runLive(t, c, r); err != nil {
 		t.Fatalf("material exposed %q %v", out, err)
 	}
-	r.Arguments = []string{"-c", "setsid /bin/sh -c 'sleep 0.3; printf escaped > survived' >/dev/null 2>&1 & exit 0"}
+	r.Arguments = []string{"-c", "command -v setsid >/dev/null || exit 90; setsid /bin/sh -c 'sleep 0.3; printf escaped > survived' >/dev/null 2>&1 & exit 0"}
 	if out, err := runLive(t, c, r); err != nil {
 		t.Fatalf("background test %q %v", out, err)
 	}

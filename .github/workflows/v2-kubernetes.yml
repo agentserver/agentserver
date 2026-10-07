@@ -123,8 +123,8 @@ jobs:
             --api-cidr=10.251.224.59/32 --all-workspaces
           go -C v2 run ./cmd/agentserver-deploy chart \
             --config="$release_dir/production.json" --output="$release_dir/chart"
-          helm lint "$release_dir/chart"
-          helm template agentserver-v2 "$release_dir/chart" >/dev/null
+          helm lint "$release_dir/chart" --namespace agentserver
+          helm template agentserver-v2 "$release_dir/chart" --namespace agentserver >/dev/null
           helm package "$release_dir/chart" --destination "$release_dir"
           printf '%s' '${{ secrets.GITHUB_TOKEN }}' | helm registry login ghcr.io --username '${{ github.actor }}' --password-stdin
           helm push "$release_dir"/agentserver-v2-*.tgz oci://ghcr.io/agentserver

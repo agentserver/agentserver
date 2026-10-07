@@ -43,23 +43,56 @@ func (state *dshSessionState) terminal() bool {
 func (state *dshSessionState) appendJournalPrompt(message corecontract.UserSessionTranscriptMessage, requestID string) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	turn := 1
-	for _, event := range state.events {
-		if event.Type == "turn/start" {
-			if value, ok := event.Data.(map[string]any); ok {
-				if number, ok := value["turn"].(int); ok && number >= turn {
-					turn = number + 1
-				}
-			}
-		}
-	}
+	state.currentTurn++
+	state.nextStep = 0
+	state.openSteps = map[int]bool{}
 	now := message.CreatedAt.UnixMilli()
-	state.appendLocked("turn/start", now, map[string]any{"turn": turn})
-	state.appendLocked("step/start", now, map[string]any{"turn": turn, "step": 1})
+	state.appendLocked("turn/start", now, map[string]any{"turn": state.currentTurn})
 	state.appendLocked("user/message", now, map[string]any{
 		"role": "user", "content": []any{map[string]any{"type": "text", "text": message.Content}},
 		"source": map[string]any{"kind": "user", "rpcId": requestID}, "id": message.MessageID,
 	})
+}
+
+// DSH keys Assistant settlements by (turn, step), not message id. Every
+// independently settled Codex item therefore owns a distinct projected step.
+func (state *dshSessionState) openStepLocked(timeMS int64) int {
+	if state.currentTurn == 0 {
+		state.currentTurn = 1
+	}
+	state.nextStep++
+	if state.openSteps == nil {
+		state.openSteps = map[int]bool{}
+	}
+	state.openSteps[state.nextStep] = true
+	state.appendLocked("step/start", timeMS, map[string]any{"turn": state.currentTurn, "step": state.nextStep})
+	return state.nextStep
+}
+
+func (state *dshSessionState) closeStepLocked(turn, step int, timeMS int64) {
+	if !state.openSteps[step] {
+		return
+	}
+	state.appendLocked("step/end", timeMS, map[string]any{"turn": turn, "step": step})
+	delete(state.openSteps, step)
+}
+
+func (state *dshSessionState) emitToolCallLocked(tool *dshToolBuilder, timeMS int64) {
+	if tool.callEmitted || tool.name == "" {
+		return
+	}
+	arguments := validToolArguments(tool.arguments.String())
+	// The canonical tool request is a model action. DSH needs its Assistant
+	// tool-call block as well as the execution lifecycle; otherwise Trajectory
+	// classifies its result as an orphan and moves it to the leading bucket.
+	state.appendLocked("assistant/message", timeMS, map[string]any{
+		"turn": tool.turn, "step": tool.step, "stream": []any{},
+		"message": map[string]any{"id": "agentserver-tool-" + tool.id, "role": "assistant",
+			"source":  map[string]any{"kind": "model", "provider": "agentserver", "model": "codex"},
+			"content": []any{map[string]any{"type": "tool-call", "id": tool.id, "name": tool.name, "arguments": arguments}}},
+	})
+	state.appendLocked("tool/call", timeMS, map[string]any{"turn": tool.turn, "step": tool.step, "callId": tool.id, "name": tool.name, "arguments": arguments})
+	tool.callEmitted = true
 }
 
 func (state *dshSessionState) mapCanonical(event runevent.Event) {
@@ -70,22 +103,14 @@ func (state *dshSessionState) mapCanonical(event runevent.Event) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	timeMS := event.CreatedAt.UnixMilli()
-	turn, step := 1, 1
-	if len(state.events) > 0 {
-		for index := len(state.events) - 1; index >= 0; index-- {
-			if state.events[index].Type == "turn/start" {
-				if values, ok := state.events[index].Data.(map[string]any); ok {
-					if value, ok := values["turn"].(int); ok {
-						turn = value
-					}
-				}
-				break
-			}
-		}
+	if state.currentTurn == 0 {
+		state.currentTurn = 1
 	}
+	turn := state.currentTurn
 	switch event.Kind {
 	case runevent.KindAssistantMessageStarted, runevent.KindAssistantReasoningStarted:
 		value := payload.(runevent.MessageStartedPayload)
+		step := state.openStepLocked(timeMS)
 		builder := &dshAssistantBuilder{
 			id: value.MessageID, attemptID: dshAssistantAttemptID(event, value.MessageID),
 			reasoning: event.Kind == runevent.KindAssistantReasoningStarted, turn: turn, step: step,
@@ -100,6 +125,7 @@ func (state *dshSessionState) mapCanonical(event runevent.Event) {
 		value := payload.(runevent.MessageDeltaPayload)
 		builder := state.builders[value.MessageID]
 		if builder == nil {
+			step := state.openStepLocked(timeMS)
 			builder = &dshAssistantBuilder{
 				id: value.MessageID, attemptID: dshAssistantAttemptID(event, value.MessageID),
 				reasoning: event.Kind == runevent.KindAssistantReasoningDelta, turn: turn, step: step,
@@ -123,6 +149,7 @@ func (state *dshSessionState) mapCanonical(event runevent.Event) {
 		value := payload.(runevent.MessageCompletedPayload)
 		builder := state.builders[value.MessageID]
 		if builder == nil {
+			step := state.openStepLocked(timeMS)
 			builder = &dshAssistantBuilder{
 				id: value.MessageID, attemptID: dshAssistantAttemptID(event, value.MessageID),
 				reasoning: event.Kind == runevent.KindAssistantReasoningDone, turn: turn, step: step,
@@ -149,41 +176,53 @@ func (state *dshSessionState) mapCanonical(event runevent.Event) {
 		for _, record := range builder.stream {
 			stream = append(stream, record)
 		}
-		settlement := state.appendLocked("assistant/message", timeMS, map[string]any{"turn": turn, "step": step, "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": contentType, "text": builder.text.String()}}, "source": map[string]any{"kind": "model", "provider": "agentserver", "model": "codex"}, "id": builder.id}, "stream": stream})
+		settlement := state.appendLocked("assistant/message", timeMS, map[string]any{"turn": builder.turn, "step": builder.step, "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": contentType, "text": builder.text.String()}}, "source": map[string]any{"kind": "model", "provider": "agentserver", "model": "codex"}, "id": builder.id}, "stream": stream})
 		state.emitAssistantEndLocked(builder, "committed", settlement.Seq, "assistant/message")
 		delete(state.builders, value.MessageID)
+		state.closeStepLocked(builder.turn, builder.step, timeMS)
 	case runevent.KindToolCallStarted:
 		value := payload.(runevent.ToolCallStartedPayload)
-		state.tools[value.ToolCallID] = &dshToolBuilder{id: value.ToolCallID, name: value.ToolCallName}
+		state.tools[value.ToolCallID] = &dshToolBuilder{id: value.ToolCallID, name: value.ToolCallName, turn: turn, step: state.openStepLocked(timeMS)}
 	case runevent.KindToolCallArguments:
 		value := payload.(runevent.ToolCallArgumentsPayload)
 		tool := state.tools[value.ToolCallID]
 		if tool == nil {
-			tool = &dshToolBuilder{id: value.ToolCallID}
+			tool = &dshToolBuilder{id: value.ToolCallID, turn: turn, step: state.openStepLocked(timeMS)}
 			state.tools[value.ToolCallID] = tool
 		}
 		tool.arguments.WriteString(value.Delta)
+		// The stock Codex adapter emits one complete argument snapshot at start.
+		// Fragmented sources remain pending until the accumulated JSON is whole.
+		if json.Valid([]byte(tool.arguments.String())) {
+			state.emitToolCallLocked(tool, timeMS)
+		}
 	case runevent.KindToolCallCompleted:
 		value := payload.(runevent.ToolCallCompletedPayload)
 		tool := state.tools[value.ToolCallID]
 		if tool == nil {
 			return
 		}
-		if !tool.callEmitted {
-			state.appendLocked("tool/call", timeMS, map[string]any{"turn": turn, "step": step, "callId": tool.id, "name": tool.name, "arguments": validToolArguments(tool.arguments.String())})
-			tool.callEmitted = true
-		}
+		state.emitToolCallLocked(tool, timeMS)
 	case runevent.KindToolCallResult:
 		value := payload.(runevent.ToolCallResultPayload)
 		tool := state.tools[value.ToolCallID]
-		if tool != nil && !tool.callEmitted {
-			state.appendLocked("tool/call", timeMS, map[string]any{"turn": turn, "step": step, "callId": tool.id, "name": tool.name, "arguments": validToolArguments(tool.arguments.String())})
-			tool.callEmitted = true
+		if tool == nil {
+			return
 		}
-		state.appendLocked("tool/result", timeMS, map[string]any{"turn": turn, "step": step, "message": map[string]any{"id": value.MessageID, "role": "tool", "content": []any{map[string]any{"type": "text", "text": value.Content}}, "source": map[string]any{"kind": "tool", "callId": value.ToolCallID}, "toolCallId": value.ToolCallID}})
+		state.emitToolCallLocked(tool, timeMS)
+		state.appendLocked("tool/result", timeMS, map[string]any{"turn": tool.turn, "step": tool.step, "message": map[string]any{"id": value.MessageID, "role": "tool", "content": []any{map[string]any{"type": "text", "text": value.Content}}, "source": map[string]any{"kind": "tool", "callId": value.ToolCallID}, "toolCallId": value.ToolCallID}})
+		state.closeStepLocked(tool.turn, tool.step, timeMS)
+		delete(state.tools, value.ToolCallID)
 	case runevent.KindRunCompleted, runevent.KindRunFailed, runevent.KindRunInterrupted, runevent.KindRunCancelled:
 		state.abandonAssistantStreamsLocked()
-		state.appendLocked("step/end", timeMS, map[string]any{"turn": turn, "step": step})
+		steps := make([]int, 0, len(state.openSteps))
+		for step := range state.openSteps {
+			steps = append(steps, step)
+		}
+		sort.Ints(steps)
+		for _, step := range steps {
+			state.closeStepLocked(turn, step, timeMS)
+		}
 		reason := map[string]any{"kind": "completed"}
 		if event.Kind != runevent.KindRunCompleted {
 			reason = map[string]any{"kind": "interrupted"}

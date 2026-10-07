@@ -91,6 +91,9 @@ type dshSessionState struct {
 	session           corecontract.UserSessionState
 	events            []dshEvent
 	nextSeq           int64
+	currentTurn       int
+	nextStep          int
+	openSteps         map[int]bool
 	subs              map[int]chan dshSessionUpdate
 	nextSub           int
 	assistantRevision int64
@@ -132,6 +135,8 @@ type dshToolBuilder struct {
 	name        string
 	arguments   strings.Builder
 	callEmitted bool
+	turn        int
+	step        int
 }
 
 type dshEvent struct {

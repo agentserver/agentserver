@@ -94,6 +94,15 @@ authority and rechecks membership on each page. Missing retained events fail
 explicitly; retention rebases are not silently converted to a different journal.
 No database migration or deletion of existing session history is needed.
 
+DSH keys Assistant settlements by `(turn, step)`. Each independently settled
+Codex message/reasoning/tool item gets its own projected step. A tool request
+also emits the Assistant `tool-call` content block that owns the matching
+`tool/call` and `tool/result`; tool results retain their original turn/step even
+when parallel calls finish out of order. Omitting the owning block makes DSH
+prepend orphan results to Turn 1. The Go regression runs the shipped DSH
+definitions and Trajectory layout in Node, including a negative control that
+reproduces that failure; it does not substitute a custom frontend sort.
+
 Managed bkectl needs a default ByteCloud **AK/SK** binding. A retained legacy
 `device_oauth` binding is not convertible into AK/SK and is not valid for this
 delivery mode. The Platform credentials page offers a password-masked AK/SK

@@ -252,6 +252,10 @@ func TestDSHGatewayAssistantStreamPublishesDeltasBeforeSettlement(t *testing.T) 
 
 	state.mapCanonical(projectorEvent(t, 1, runevent.KindAssistantMessageStarted, runevent.MessageStartedPayload{MessageID: "message-stream", Role: "assistant"}))
 	state.mapCanonical(projectorEvent(t, 2, runevent.KindAssistantMessageDelta, runevent.MessageDeltaPayload{MessageID: "message-stream", Delta: "hello"}))
+	stepStart := <-updates
+	if stepStart.event == nil || stepStart.event.Type != "step/start" {
+		t.Fatalf("missing owning step: %+v", stepStart)
+	}
 	start := <-updates
 	if start.assistantFrame == nil || start.assistantFrame["type"] != "start" {
 		t.Fatalf("assistant start update = %#v", start)
@@ -286,7 +290,7 @@ func TestDSHGatewayAssistantStreamPublishesDeltasBeforeSettlement(t *testing.T) 
 		t.Fatalf("completion updates = %#v %#v", settlement, end)
 	}
 	endOutcome := end.assistantFrame["outcome"].(map[string]any)
-	if endOutcome["kind"] != "committed" || endOutcome["eventType"] != "assistant/message" || endOutcome["seq"] != int64(0) {
+	if endOutcome["kind"] != "committed" || endOutcome["eventType"] != "assistant/message" || endOutcome["seq"] != int64(1) {
 		t.Fatalf("assistant end outcome = %#v", endOutcome)
 	}
 }

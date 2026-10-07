@@ -1,5 +1,5 @@
 name: Publish v2 Kubernetes Sandbox Artifacts
-# Service repairs package Platform assets, product deep links and Go gateways.
+# Service repairs package Platform assets and the durable DSH event projection.
 
 on:
   workflow_dispatch:
@@ -88,6 +88,9 @@ jobs:
         with:
           go-version: 1.26.5
           cache: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:

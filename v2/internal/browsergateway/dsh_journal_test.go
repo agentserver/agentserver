@@ -86,10 +86,10 @@ func TestDSHJournalLiveReplayAndReplicaSwitchKeepIdenticalCursors(t *testing.T) 
 	if cursor != replayCursor || !reflect.DeepEqual(live, replay) {
 		t.Fatalf("replica replay changed journal: live=%+v replay=%+v", live, replay)
 	}
-	if cursor != 6 {
+	if cursor != 7 {
 		t.Fatalf("lost tool/terminal events: cursor=%d", cursor)
 	}
-	if live[2].Data.(map[string]any)["source"].(map[string]any)["rpcId"] != "prompt-rpc-1" {
+	if live[1].Data.(map[string]any)["source"].(map[string]any)["rpcId"] != "prompt-rpc-1" {
 		t.Fatal("durable prompt did not acknowledge client submission")
 	}
 	reason := replay[len(replay)-1].Data.(map[string]any)["reason"].(map[string]any)
@@ -148,7 +148,7 @@ func TestDSHJournalReadFailureDoesNotInstallEmptyHistory(t *testing.T) {
 	}
 	b.readError = nil
 	state, err := g.state(t.Context(), "user-token", projectorSessionID)
-	if err != nil || state.lastSeq() != 2 {
+	if err != nil || state.lastSeq() != 1 {
 		t.Fatalf("retry did not restore prompt: %v", err)
 	}
 }

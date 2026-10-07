@@ -2,10 +2,10 @@
   "sourceRevision": "0ef107e43d023d97276802a7e35be07ca2797972",
   "workflowRun": 37566451939,
   "gatewayRepairRun": 37572899447,
-  "serviceRepairRevision": "85ce9e860aebf96e55ea264d5fefba7e66ac4651",
-  "serviceRepairRun": 37587484604,
+  "serviceRepairRevision": "7a2562537bd4be8b9409fdd5b5ee7fe411c810cd",
+  "serviceRepairRun": 37602087037,
   "images": {
-    "service": "ghcr.io/agentserver/v2-service@sha256:9c28100e9ca3bcecc8cdfbc985131b6f14fb0915a7c35725dc05024263001db0",
+    "service": "ghcr.io/agentserver/v2-service@sha256:e148b55eb11901ce0bd93b270034ca83b98dfd1b0dcce41e44f6a81336bfd634",
     "harness": "ghcr.io/agentserver/v2-harness@sha256:76fab81aa98416a35d91d1b64b6ecc6468c59d6174564761698c8840f1576772",
     "k8s-runtime": "ghcr.io/agentserver/v2-k8s-runtime@sha256:864242f86a62b6efa6b3c550d32d5e9ad40301792bc895be0069969b17275074",
     "k8s-gateway": "ghcr.io/agentserver/v2-k8s-gateway@sha256:499ff91f1768d95bf86fd4ecac367ffe767523e43270b6959eab84f15999e683",

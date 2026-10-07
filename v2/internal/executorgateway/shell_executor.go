@@ -1013,10 +1013,13 @@ func newUnknownShellResult(processID string) ShellV1Result {
 
 func managedEnvironmentFailureShellResult(processID string, err error) ShellV1Result {
 	reasonCode, _ := managedExecutionErrorMetadata(err)
-	if reasonCode != "credential_not_configured" {
+	if reasonCode != "credential_not_configured" && reasonCode != "bytecloud_aksk_required" {
 		return newUnknownShellResult(processID)
 	}
 	return ShellV1Result{
+		// No backend request was made. Preserve the conservative unacknowledged
+		// operation status, but report the actionable credential prerequisite
+		// instead of pretending that process output was lost.
 		ProcessID: processID, Status: "unknown", ReasonCode: reasonCode,
 		Chunks: []ShellV1OutputChunk{}, NextSequence: 1, OutputComplete: true,
 	}

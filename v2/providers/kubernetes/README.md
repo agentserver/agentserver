@@ -90,9 +90,12 @@ filesystem access enforcement is implemented and tested on the chosen runtime.
 3. Images and Chart are published and workloads Ready. The gateway image also
    includes its TCP health helper. Cilium requires `toEntities: kube-apiserver`
    on 443/6443 for the gateway; the tested rule does not cover runtime Pods.
-4. Finish authenticated user-session acceptance: environment enumeration and
-   CLI execution through Core/executor/gateway/runtime. Native tests are not
-   a substitute for that full product path.
+4. A real user run on 2026-10-07 enumerated `SG · Kubernetes`, created a ready
+   SandboxClaim/Sandbox/Pod in about two seconds, and subsequent user commands
+   executed bkectl help with exit 0 through Core/executor/gateway/runtime.
+   Credentialed bkectl calls exposed a retained `device_oauth` default binding;
+   they require the owner to configure AK/SK in Platform. Complete the remaining
+   credentialed CLI and Lark acceptance before declaring end-to-end completion.
 
 No `active-k8s` state string or TAE revision placeholder is introduced: provider
 selection and the existing rollout stage must be separate configuration axes.

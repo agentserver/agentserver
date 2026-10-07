@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/corecredentials"
+	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
@@ -72,9 +75,36 @@ func TestResolveExecutionCredentialRejectsRotatedByteCloudBinding(t *testing.T) 
 func TestResolveExecutionCredentialRejectsNonAKSKByteCloudBinding(t *testing.T) {
 	service, store, request := testBkectlExecutionCredentialService(t)
 	store.binding.AuthType = corecredentials.AuthTypeDeviceOAuth
+	_, authorityErr := service.ResolveAuthority(t.Context(), corecontract.ResolveEgressCredentialAuthorityRequest{Operation: request.Operation, ProviderKind: "bytecloud", PolicySHA256: request.PolicySHA256})
+	if !coredb.HasStateErrorCode(authorityErr, coredb.ErrorByteCloudAKSKRequired) {
+		t.Fatalf("legacy credential error is not actionable: %v", authorityErr)
+	}
+	store.authorityCalls = 0
 	if result, err := service.ResolveExecutionCredential(t.Context(), request); err == nil || result.Credential != "" ||
 		store.authorityCalls != 1 || store.useCalls != 0 || len(store.events) != 0 {
 		t.Fatalf("non-AKSK ByteCloud binding reached process materialization: %#v, %v / %#v", result, err, store)
+	}
+}
+
+func TestByteCloudLegacyBindingHTTPErrorRemainsActionable(t *testing.T) {
+	service, store, request := testBkectlExecutionCredentialService(t)
+	store.binding.AuthType = corecredentials.AuthTypeDeviceOAuth
+	handler, err := NewExecutionCredentialHandler(&recordingRunAttemptAuthorizer{}, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := corecontract.ResolveEgressCredentialAuthorityRequest{Operation: request.Operation, ProviderKind: "bytecloud", PolicySHA256: request.PolicySHA256}
+	raw, _ := json.Marshal(command)
+	response := httptest.NewRecorder()
+	httpRequest := httptest.NewRequest(http.MethodPost, corecontract.ResolveExecutionCredentialAuthorityPath, bytes.NewReader(raw))
+	httpRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(response, httpRequest)
+	var result corecontract.ErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusConflict || result.Code != "bytecloud_aksk_required" {
+		t.Fatalf("opaque credential response: %d %+v", response.Code, result)
 	}
 }
 

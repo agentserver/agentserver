@@ -93,3 +93,12 @@ The journal uses the existing combined `sessions.transcript` user/workload
 authority and rechecks membership on each page. Missing retained events fail
 explicitly; retention rebases are not silently converted to a different journal.
 No database migration or deletion of existing session history is needed.
+
+Managed bkectl needs a default ByteCloud **AK/SK** binding. A retained legacy
+`device_oauth` binding is not convertible into AK/SK and is not valid for this
+delivery mode. The Platform credentials page offers a password-masked AK/SK
+form; values go only into the authenticated HTTPS create request and Core's
+sealed storage, never browser storage or chat. Creating a new default retains
+the old binding. `bytecloud_aksk_required` means no process was dispatched;
+the unacknowledged operation retains its conservative ledger status, but output
+is not reported as missing and no subprocess exit code is invented.

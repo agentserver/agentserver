@@ -224,6 +224,34 @@ func TestManagedShellReturnsCredentialNotConfiguredBeforeBackendDispatch(t *test
 	}
 }
 
+func TestManagedShellReportsLegacyByteCloudCredentialWithoutStartingProcess(t *testing.T) {
+	environment := testManagedEnvironment(t)
+	environment.Target.Kind = executionbackend.KindKubernetes
+	backend, err := executionbackendtest.NewFakeBackend(executionbackend.KindKubernetes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := executionbackend.NewRouter(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := managedEnvironmentIssuerFunc(func(context.Context, ManagedProcessEnvironmentRequest) (map[string]string, error) {
+		return nil, &CoreCommandError{Code: "bytecloud_aksk_required", HTTPStatus: 409, Message: "private payload must not be echoed"}
+	})
+	executor := newManagedShellExecutor(t, environment, newFakeShellAuthority(), router, issuer)
+	result, err := executor.Execute(t.Context(), ShellExecuteRequest{Principal: testExecutorMCPPrincipal("aksk-required"), ToolCallID: "call-aksk-required", Arguments: json.RawMessage(fmt.Sprintf(`{"environment_id":%q,"argv":["bkectl","bytetree","node","get","--id","4428303"]}`, environment.EnvironmentID))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReasonCode != "bytecloud_aksk_required" || !result.OutputComplete || result.ExitCode != nil || len(backend.StartCalls()) != 0 {
+		t.Fatalf("credential precondition result: %+v, backend starts %d", result, len(backend.StartCalls()))
+	}
+	raw, _ := json.Marshal(result)
+	if strings.Contains(string(raw), "private payload") {
+		t.Fatal("untrusted Core error leaked")
+	}
+}
+
 func TestManagedShellTerminalObservedAtDeadlineDispatchesTimeout(t *testing.T) {
 	environment := testManagedEnvironment(t)
 	backend, err := executionbackendtest.NewFakeBackend(executionbackend.KindTAE)

@@ -9,20 +9,21 @@ import (
 type StateErrorCode string
 
 const (
-	ErrorInvalidArgument     StateErrorCode = "invalid_argument"
-	ErrorForbidden           StateErrorCode = "forbidden"
-	ErrorNotFound            StateErrorCode = "not_found"
-	ErrorVersionConflict     StateErrorCode = "version_conflict"
-	ErrorIdempotencyConflict StateErrorCode = "idempotency_conflict"
-	ErrorActiveRun           StateErrorCode = "active_run"
-	ErrorInvalidState        StateErrorCode = "invalid_state"
-	ErrorLeaseHeld           StateErrorCode = "lease_held"
-	ErrorLeaseLost           StateErrorCode = "lease_lost"
-	ErrorConnectionFenced    StateErrorCode = "connection_fenced"
-	ErrorEventConflict       StateErrorCode = "event_conflict"
-	ErrorOutboxClaimLost     StateErrorCode = "outbox_claim_lost"
-	ErrorConflict            StateErrorCode = "conflict"
-	ErrorDatabase            StateErrorCode = "database_error"
+	ErrorInvalidArgument       StateErrorCode = "invalid_argument"
+	ErrorForbidden             StateErrorCode = "forbidden"
+	ErrorNotFound              StateErrorCode = "not_found"
+	ErrorVersionConflict       StateErrorCode = "version_conflict"
+	ErrorIdempotencyConflict   StateErrorCode = "idempotency_conflict"
+	ErrorActiveRun             StateErrorCode = "active_run"
+	ErrorInvalidState          StateErrorCode = "invalid_state"
+	ErrorLeaseHeld             StateErrorCode = "lease_held"
+	ErrorLeaseLost             StateErrorCode = "lease_lost"
+	ErrorConnectionFenced      StateErrorCode = "connection_fenced"
+	ErrorEventConflict         StateErrorCode = "event_conflict"
+	ErrorOutboxClaimLost       StateErrorCode = "outbox_claim_lost"
+	ErrorConflict              StateErrorCode = "conflict"
+	ErrorByteCloudAKSKRequired StateErrorCode = "bytecloud_aksk_required"
+	ErrorDatabase              StateErrorCode = "database_error"
 )
 
 // StateError describes a domain command rejection without exposing SQL or

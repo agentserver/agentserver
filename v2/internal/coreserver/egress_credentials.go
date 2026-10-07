@@ -140,7 +140,7 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 		case bkectlpolicy.CredentialKind:
 			if binding.AuthType != corecredentials.AuthTypeAKSK {
 				return corecontract.ResolveEgressCredentialAuthorityResponse{}, &coredb.StateError{
-					Code: coredb.ErrorConflict, Operation: "ResolveEgressCredentialAuthority",
+					Code: coredb.ErrorByteCloudAKSKRequired, Operation: "ResolveEgressCredentialAuthority",
 					Resource: "credential", ResourceID: ref.BindingID,
 					Message: "workspace ByteCloud credential is not an AK/SK binding; configure it again",
 				}

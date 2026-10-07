@@ -1,5 +1,5 @@
 name: Publish v2 Kubernetes Sandbox Artifacts
-# Service repairs include the durable DSH prompt acknowledgement identity.
+# Service repairs package the checked-in Platform assets and Go gateways.
 
 on:
   workflow_dispatch:

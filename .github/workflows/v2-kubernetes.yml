@@ -21,6 +21,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gateway-probe-repair:
+    if: ${{ contains(github.event.head_commit.message, '[k8s gateway]') }}
+    runs-on: k8s-sg
+    timeout-minutes: 15
+    outputs:
+      image: ${{ steps.repair.outputs.image }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Restore and exercise the gateway TCP health helper
+        id: repair
+        run: |
+          set -euo pipefail
+          image="ghcr.io/agentserver/v2-k8s-gateway:probe-${GITHUB_SHA}"
+          service_base=$(jq -er '.images.service' v2/deploy/production/kubernetes-published-images.json)
+          gateway_base=$(jq -er '.images["k8s-gateway"]' v2/deploy/production/kubernetes-published-images.json)
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg "SERVICE_BASE=$service_base" --build-arg "GATEWAY_BASE=$gateway_base" \
+            --tag "$image" --file v2/deploy/production/kubernetes-gateway-repair.Containerfile v2/deploy/production
+          status=0
+          docker run --rm --entrypoint /usr/local/bin/agentserver-probe "$image" tcp --address=127.0.0.1:1 || status=$?
+          test "$status" -eq 1
+          for attempt in 1 2 3; do
+            if docker push --quiet "$image"; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 10
+          done
+          printf 'image=%s\n' "$(docker inspect --format '{{index .RepoDigests 0}}' "$image")" >>"$GITHUB_OUTPUT"
   node-profile-installer:
     if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
     runs-on: k8s-sg
@@ -40,6 +73,8 @@ jobs:
             --file v2/deploy/production/security/profile-installer.Containerfile \
             v2/deploy/production/security
   publish:
+    needs: gateway-probe-repair
+    if: ${{ always() && (needs.gateway-probe-repair.result == 'success' || needs.gateway-probe-repair.result == 'skipped') }}
     runs-on: k8s-sg
     timeout-minutes: 60
     env:
@@ -101,6 +136,8 @@ jobs:
         run: bash v2/deploy/production/publish-kubernetes-images.sh
       - name: Reuse published images without rebuilding application binaries
         if: ${{ inputs.chart_only || contains(github.event.head_commit.message, '[k8s chart]') }}
+        env:
+          REPAIRED_GATEWAY_IMAGE: ${{ needs.gateway-probe-repair.outputs.image }}
         run: |
           set -euo pipefail
           release_dir="${RUNNER_TEMP}/kubernetes-release"
@@ -109,6 +146,9 @@ jobs:
             jq -er --arg kind "$kind" '.images[$kind]' \
               v2/deploy/production/kubernetes-published-images.json >"$release_dir/$kind.image"
           done
+          if [ -n "$REPAIRED_GATEWAY_IMAGE" ]; then
+            printf '%s\n' "$REPAIRED_GATEWAY_IMAGE" >"$release_dir/k8s-gateway.image"
+          fi
       - name: Prepare active chart (does not deploy it)
         run: |
           set -euo pipefail

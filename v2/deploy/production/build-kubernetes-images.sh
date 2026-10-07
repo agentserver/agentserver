@@ -42,6 +42,7 @@ case "$engine" in docker|container) ;; *) usage >&2; exit 2 ;; esac
 mkdir -p "$output_directory/runtime/packs/bkectl" "$output_directory/gateway"
 GOTOOLCHAIN=go1.26.5 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C "$repo_root" build -trimpath -o "$output_directory/runtime/agentserver-k8s-runtime" ./cmd/k8s-runtime
 GOTOOLCHAIN=go1.26.5 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C "$repo_root/providers/kubernetes" build -trimpath -o "$output_directory/gateway/sandbox-gateway-k8s" ./cmd/sandbox-gateway
+GOTOOLCHAIN=go1.26.5 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C "$repo_root" build -trimpath -o "$output_directory/gateway/agentserver-probe" ./cmd/agentserver-probe
 cp "$bkectl_binary" "$output_directory/runtime/bkectl"
 cp "$lark_binary" "$output_directory/runtime/lark-cli"
 cp "$bwrap_binary" "$output_directory/runtime/bwrap"

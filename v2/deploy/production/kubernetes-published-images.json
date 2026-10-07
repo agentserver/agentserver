@@ -1,0 +1,11 @@
+{
+  "sourceRevision": "0ef107e43d023d97276802a7e35be07ca2797972",
+  "workflowRun": 37566451939,
+  "images": {
+    "service": "ghcr.io/agentserver/v2-service@sha256:f9cd00b43ee0224bf8aac3d9b412cce1da902e5c4b304bc2dc1e51995b1c04b5",
+    "harness": "ghcr.io/agentserver/v2-harness@sha256:76fab81aa98416a35d91d1b64b6ecc6468c59d6174564761698c8840f1576772",
+    "k8s-runtime": "ghcr.io/agentserver/v2-k8s-runtime@sha256:864242f86a62b6efa6b3c550d32d5e9ad40301792bc895be0069969b17275074",
+    "k8s-gateway": "ghcr.io/agentserver/v2-k8s-gateway@sha256:c107317ba9b302134244b0e474f60b4d42d38f8186e6711fe8035d3517cdaf61",
+    "k8s-profile-installer": "ghcr.io/agentserver/v2-k8s-profile-installer@sha256:983a1b17c282642ada778c3f9488f83a4d621c629a252c48b3823c88fa745f74"
+  }
+}

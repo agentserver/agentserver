@@ -129,6 +129,23 @@ func validateHelmChart(chart HelmChart) error {
 	slices.Sort(actual)
 	base := append([]string(nil), requiredHelmBaseChartFiles...)
 	managed := append([]string(nil), requiredHelmManagedChartFiles...)
+	raw, found := chart.File(helmConfigFile)
+	if !found {
+		return errors.New("production Helm chart is missing deployment configuration")
+	}
+	config, err := ParseConfig(raw)
+	if err != nil {
+		return fmt.Errorf("production Helm chart configuration: %w", err)
+	}
+	if config.Document.Managed.Provider == "k8s" {
+		withoutTAE := func(files []string) []string {
+			return slices.DeleteFunc(files, func(name string) bool {
+				return name == helmTAENetworkProbeTemplateFile || name == helmTAENetworkProbeManifestFile
+			})
+		}
+		base = withoutTAE(base)
+		managed = withoutTAE(managed)
+	}
 	slices.Sort(base)
 	slices.Sort(managed)
 	if !slices.Equal(actual, base) && !slices.Equal(actual, managed) {

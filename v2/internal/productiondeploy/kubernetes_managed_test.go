@@ -61,6 +61,20 @@ func TestKubernetesChartRendersExecutableGraphWithoutTAE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	destination := filepath.Join(t.TempDir(), "chart")
+	t.Cleanup(func() {
+		_ = filepath.Walk(destination, func(path string, info os.FileInfo, err error) error {
+			if err == nil && info.IsDir() {
+				_ = os.Chmod(path, 0700)
+			}
+			return nil
+		})
+	})
+	for range 2 {
+		if err := WriteHelmChart(chart, destination); err != nil {
+			t.Fatalf("Kubernetes chart publication: %v", err)
+		}
+	}
 	bundle, err := Render(loaded)
 	if err != nil {
 		t.Fatal(err)

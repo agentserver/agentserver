@@ -2,6 +2,11 @@ name: Publish v2 Kubernetes Sandbox Artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      chart_only:
+        type: boolean
+        default: false
+        description: Reuse the explicitly recorded published image set and publish only the chart
   push:
     branches: [feat/botmux-native-oauth]
     paths: [".github/workflows/v2-kubernetes.yml"]
@@ -17,6 +22,7 @@ concurrency:
 
 jobs:
   node-profile-installer:
+    if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
     runs-on: k8s-sg
     timeout-minutes: 15
     steps:
@@ -68,6 +74,7 @@ jobs:
             "$CODE_BYTED_USERNAME" "$CODE_BYTED_TOKEN" | git credential approve
           printf '%s\n' 'GIT_TERMINAL_PROMPT=0' 'GOPRIVATE=code.byted.org' 'GONOSUMDB=code.byted.org' >>"$GITHUB_ENV"
       - name: Test services and Kubernetes provider
+        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
         run: |
           if ! command -v gcc >/dev/null; then
             sudo apt-get update
@@ -76,6 +83,9 @@ jobs:
           go -C v2 test ./...
           go -C v2/providers/kubernetes vet ./...
           CGO_ENABLED=1 go -C v2/providers/kubernetes test -race ./...
+      - name: Test chart-only changes
+        if: ${{ inputs.chart_only || contains(github.event.head_commit.message, '[k8s chart]') }}
+        run: go -C v2 test ./internal/productiondeploy
       - name: Download the previously deployed runtime configuration
         uses: actions/download-artifact@v4
         with:
@@ -84,10 +94,21 @@ jobs:
           name: agentserver-v2-production-53e4f7f19848601fc6098579574c26ef1dd93594
           path: ${{ runner.temp }}/kubernetes-base
       - name: Build and publish Kubernetes services and profile installer
+        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
         env:
           RELEASE_TAG: k8s-${{ github.sha }}
           RELEASE_DIRECTORY: ${{ runner.temp }}/kubernetes-release
         run: bash v2/deploy/production/publish-kubernetes-images.sh
+      - name: Reuse published images without rebuilding application binaries
+        if: ${{ inputs.chart_only || contains(github.event.head_commit.message, '[k8s chart]') }}
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/kubernetes-release"
+          mkdir -p "$release_dir"
+          for kind in service harness k8s-runtime k8s-gateway k8s-profile-installer; do
+            jq -er --arg kind "$kind" '.images[$kind]' \
+              v2/deploy/production/kubernetes-published-images.json >"$release_dir/$kind.image"
+          done
       - name: Prepare active chart (does not deploy it)
         run: |
           set -euo pipefail
@@ -108,13 +129,14 @@ jobs:
           printf '%s' '${{ secrets.GITHUB_TOKEN }}' | helm registry login ghcr.io --username '${{ github.actor }}' --password-stdin
           helm push "$release_dir"/agentserver-v2-*.tgz oci://ghcr.io/agentserver
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: agentserver-v2-kubernetes-${{ github.sha }}
           path: |
             ${{ runner.temp }}/kubernetes-release/*.image
             ${{ runner.temp }}/kubernetes-release/production.json
             ${{ runner.temp }}/kubernetes-release/*.tgz
-          if-no-files-found: error
+          if-no-files-found: warn
       - name: Remove temporary dependency credential
         if: always()
         run: |

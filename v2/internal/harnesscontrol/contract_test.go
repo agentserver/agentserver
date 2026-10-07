@@ -32,6 +32,7 @@ func TestHarnessControlJSONSchemaAcceptsGoContractAndRejectsUnsafeShapes(t *test
 		RunAttemptGeneration: 3, WorkerSentThrough: 3, WorkerReceivedThrough: 2,
 	}
 	valid := []any{
+		Frame{Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 1, RunAttemptGeneration: 3, Payload: mustPayload(t, SessionTitleEvent{Kind: EventKindSessionTitle, Title: "检查权限", Source: "generated"})},
 		validHello(),
 		resumeHello,
 		Welcome{

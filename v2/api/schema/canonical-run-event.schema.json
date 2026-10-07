@@ -64,6 +64,22 @@
   ],
   "allOf": [
     {
+      "if": {"properties": {"kind": {"const": "session.title.proposed"}}, "required": ["kind"]},
+      "then": {
+        "required": ["payload"], "not": {"required": ["object"]},
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "payload": {
+            "type": "object", "additionalProperties": false, "required": ["title", "source"],
+            "properties": {
+              "title": {"type": "string", "minLength": 1, "maxLength": 36},
+              "source": {"enum": ["fallback", "generated"]}
+            }
+          }
+        }
+      }
+    },
+    {
       "oneOf": [
         {
           "properties": {

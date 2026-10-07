@@ -10,6 +10,7 @@ import (
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	"github.com/agentserver/agentserver/v2/internal/browsergateway/a2ui"
 	"github.com/agentserver/agentserver/v2/internal/runevent"
+	"github.com/agentserver/agentserver/v2/internal/sessiontitle"
 )
 
 type ProjectionScope struct {
@@ -118,6 +119,10 @@ func (projector *Projector) Project(event runevent.Event) (Projection, error) {
 
 func (projector *Projector) projectKnown(event runevent.Event, payload any) (Projection, error) {
 	switch event.Kind {
+	case sessiontitle.EventKind:
+		// Session metadata is projected from Core's accepted title journal,
+		// never rendered as a model message or tool invocation.
+		return Projection{}, nil
 	case runevent.KindAssistantMessageStarted:
 		message := payload.(runevent.MessageStartedPayload)
 		if _, exists := projector.activeMessages[message.MessageID]; exists {

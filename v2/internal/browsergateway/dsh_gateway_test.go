@@ -17,6 +17,7 @@ type dshFakeBackend struct {
 	sessions []corecontract.UserSessionState
 	created  corecontract.CreateUserSessionResponse
 	mode     corecontract.UpdateUserSessionPermissionModeResponse
+	journal  []corecontract.UserSessionJournalEntry
 }
 
 func (fake *dshFakeBackend) ListSessions(context.Context, string, string) (corecontract.ListUserSessionsResponse, error) {
@@ -35,8 +36,15 @@ func (fake *dshFakeBackend) CreateSession(_ context.Context, _, _ string, input 
 	fake.created = corecontract.CreateUserSessionResponse{Session: state, Created: true}
 	return fake.created, nil
 }
-func (fake *dshFakeBackend) UpdateSession(context.Context, string, string, string, corecontract.UpdateUserSessionRequest) (corecontract.UpdateUserSessionResponse, error) {
-	return corecontract.UpdateUserSessionResponse{}, nil
+func (fake *dshFakeBackend) UpdateSession(_ context.Context, _ string, _ string, _ string, request corecontract.UpdateUserSessionRequest) (corecontract.UpdateUserSessionResponse, error) {
+	state := fake.sessions[0]
+	state.Title = request.Title
+	state.TitleSource = "manual"
+	state.TitleVersion++
+	state.Version++
+	fake.sessions[0] = state
+	fake.journal = append(fake.journal, corecontract.UserSessionJournalEntry{Seq: int64(len(fake.journal) + 1), Kind: "title", CreatedAt: time.Now(), Title: state.Title, TitleSource: state.TitleSource, TitleVersion: state.TitleVersion})
+	return corecontract.UpdateUserSessionResponse{Session: state, Changed: true}, nil
 }
 func (fake *dshFakeBackend) ArchiveSession(context.Context, string, string, string, corecontract.ArchiveUserSessionRequest) (corecontract.ArchiveUserSessionResponse, error) {
 	return corecontract.ArchiveUserSessionResponse{}, nil
@@ -45,6 +53,8 @@ func (fake *dshFakeBackend) UpdatePermissionMode(_ context.Context, _, _, _ stri
 	state := fake.sessions[0]
 	state.PermissionMode = input.PermissionMode
 	state.PermissionModeVersion++
+	fake.sessions[0] = state
+	fake.journal = append(fake.journal, corecontract.UserSessionJournalEntry{Seq: int64(len(fake.journal) + 1), Kind: "permission", CreatedAt: time.Now(), PermissionMode: state.PermissionMode, PermissionVersion: state.PermissionModeVersion})
 	fake.mode = corecontract.UpdateUserSessionPermissionModeResponse{Session: state, Changed: true}
 	return fake.mode, nil
 }
@@ -55,13 +65,24 @@ func (fake *dshFakeBackend) GetTranscript(context.Context, string, string, strin
 	return corecontract.GetUserSessionTranscriptResponse{}, nil
 }
 
-func (fake *dshFakeBackend) GetJournal(_ context.Context, _ string, workspaceID, sessionID, _ string, _ int64) (corecontract.UserSessionJournalPage, error) {
+func (fake *dshFakeBackend) GetJournal(_ context.Context, _ string, workspaceID, sessionID string, cursor int64) (corecontract.UserSessionJournalPage, error) {
 	state := corecontract.UserSessionState{}
 	if len(fake.sessions) > 0 {
 		state = fake.sessions[0]
 	}
 	state.WorkspaceID, state.SessionID = workspaceID, sessionID
-	return corecontract.UserSessionJournalPage{Session: state, Events: []runevent.Event{}}, nil
+	if len(fake.journal) == 0 {
+		mode := state.PermissionMode
+		if mode == "" {
+			mode = "read-only"
+		}
+		version := state.PermissionModeVersion
+		if version < 1 {
+			version = 1
+		}
+		fake.journal = []corecontract.UserSessionJournalEntry{{Seq: 1, Kind: "permission", CreatedAt: state.CreatedAt, PermissionMode: mode, PermissionVersion: version}}
+	}
+	return corecontract.UserSessionJournalPage{Session: state, Entries: fake.journal[cursor:], Cursor: int64(len(fake.journal))}, nil
 }
 func (fake *dshFakeBackend) StartRun(context.Context, StartRunRequest) (StartRunResult, error) {
 	return StartRunResult{}, nil

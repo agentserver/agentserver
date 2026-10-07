@@ -15,6 +15,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/runevent"
+	"github.com/agentserver/agentserver/v2/internal/sessiontitle"
 )
 
 const (
@@ -87,6 +88,15 @@ func newRuntimeEventMapper(threadID, turnID string, frozen BrainToolCatalog) (*r
 func (mapper *runtimeEventMapper) Map(event harnesscontrol.Event) ([]mappedRuntimeEvent, error) {
 	if mapper == nil {
 		return nil, errors.New("runtime event mapper is required")
+	}
+	if event.Kind == harnesscontrol.EventKindSessionTitle {
+		if event.SessionTitle == nil {
+			return nil, errors.New("missing session title proposal")
+		}
+		if err := event.SessionTitle.Validate(); err != nil {
+			return nil, err
+		}
+		return mappedPayload("brain", sessiontitle.EventKind, sessiontitle.Proposal{Title: event.SessionTitle.Title, Source: event.SessionTitle.Source})
 	}
 	if mapper.terminal {
 		return nil, errors.New("runtime event arrived after stock turn terminal")

@@ -37,7 +37,7 @@
     "receiveFromWorker": {
       "action": "receive",
       "channel": {"$ref": "#/channels/attemptControl"},
-      "summary": "Receive the authenticated hello, worker lifecycle/runtime/approval-request events, cumulative ACKs, and terminal session errors.",
+      "summary": "Receive authenticated worker lifecycle/runtime/approval-request events, bounded automatic title proposals, cumulative ACKs, and terminal session errors.",
       "messages": [
         {"$ref": "#/channels/attemptControl/messages/hello"},
         {"$ref": "#/channels/attemptControl/messages/event"},

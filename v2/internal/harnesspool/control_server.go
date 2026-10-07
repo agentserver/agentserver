@@ -705,7 +705,7 @@ func (runtime *attemptControlRuntime) processSequencedEvent(ctx context.Context,
 		runtime.finishLocked(controlOutcome{terminal: &copy})
 		runtime.mu.Unlock()
 		return nil
-	case harnesscontrol.EventKindAppServerNotification, harnesscontrol.EventKindExecutorMCPProgress:
+	case harnesscontrol.EventKindAppServerNotification, harnesscontrol.EventKindExecutorMCPProgress, harnesscontrol.EventKindSessionTitle:
 		if !runtime.turnAccepted || runtime.terminalSeen {
 			return controlProtocolError(harnesscontrol.ErrorAttemptMismatch, "runtime event is outside the accepted turn")
 		}

@@ -57,7 +57,7 @@ type DSHSessionBackend interface {
 	UpdatePermissionMode(context.Context, string, string, string, corecontract.UpdateUserSessionPermissionModeRequest) (corecontract.UpdateUserSessionPermissionModeResponse, error)
 	UpdateWorkingDirectory(context.Context, string, string, string, corecontract.UpdateUserSessionWorkingDirectoryRequest) (corecontract.UpdateUserSessionWorkingDirectoryResponse, error)
 	GetTranscript(context.Context, string, string, string) (corecontract.GetUserSessionTranscriptResponse, error)
-	GetJournal(context.Context, string, string, string, string, int64) (corecontract.UserSessionJournalPage, error)
+	GetJournal(context.Context, string, string, string, int64) (corecontract.UserSessionJournalPage, error)
 	StartRun(context.Context, StartRunRequest) (StartRunResult, error)
 	ReadRunEvents(context.Context, ReadRunEventsRequest) (ReadRunEventsResult, error)
 	CancelRun(context.Context, CancelRunRequest) (CancelRunResult, error)
@@ -83,24 +83,30 @@ type DSHGateway struct {
 }
 
 type dshSessionState struct {
-	journalMu         sync.Mutex
-	journalRunID      string
-	journalSeq        int64
-	journalApprovals  map[string]runevent.Event
-	mu                sync.Mutex
-	session           corecontract.UserSessionState
-	events            []dshEvent
-	nextSeq           int64
-	currentTurn       int
-	nextStep          int
-	openSteps         map[int]bool
-	subs              map[int]chan dshSessionUpdate
-	nextSub           int
-	assistantRevision int64
-	runCancel         context.CancelFunc
-	builders          map[string]*dshAssistantBuilder
-	tools             map[string]*dshToolBuilder
-	pending           []dshPendingPrompt
+	journalMu                  sync.Mutex
+	journalCursor              int64
+	journalRunID               string
+	journalRunSeq              int64
+	journalApprovals           map[string]runevent.Event
+	projectedPermission        string
+	projectedPermissionVersion int64
+	projectedTitle             string
+	projectedTitleVersion      int64
+	firstPromptSeq             *int64
+	mu                         sync.Mutex
+	session                    corecontract.UserSessionState
+	events                     []dshEvent
+	nextSeq                    int64
+	currentTurn                int
+	nextStep                   int
+	openSteps                  map[int]bool
+	subs                       map[int]chan dshSessionUpdate
+	nextSub                    int
+	assistantRevision          int64
+	runCancel                  context.CancelFunc
+	builders                   map[string]*dshAssistantBuilder
+	tools                      map[string]*dshToolBuilder
+	pending                    []dshPendingPrompt
 }
 
 type dshPendingPrompt struct {
@@ -377,16 +383,15 @@ func (gateway *DSHGateway) dispatch(ctx context.Context, bearer, endpoint string
 		state.mu.Lock()
 		expectedVersion := state.session.Version
 		state.mu.Unlock()
-		result, err := gateway.backend.UpdateSession(ctx, bearer, gateway.config.WorkspaceID, request.SessionID, corecontract.UpdateUserSessionRequest{Title: request.Title, ExpectedVersion: expectedVersion})
+		_, err = gateway.backend.UpdateSession(ctx, bearer, gateway.config.WorkspaceID, request.SessionID, corecontract.UpdateUserSessionRequest{Title: request.Title, ExpectedVersion: expectedVersion})
 		if err != nil {
 			return gateway.dshError(err)
 		}
-		gateway.installSession(result.Session)
-		seq := state.lastSeq()
-		if seq < 0 {
-			seq = 0
+		if err := gateway.refreshJournal(ctx, bearer, state); err != nil {
+			return gateway.dshError(err)
 		}
-		return map[string]any{"title": result.Session.Title, "seq": seq}, true, "", "", nil
+		_, _, title, seq := state.projection()
+		return map[string]any{"title": title, "seq": seq}, true, "", "", nil
 	case "session/prompt":
 		return gateway.prompt(ctx, bearer, args)
 	case "session/cancel":
@@ -448,8 +453,8 @@ func (gateway *DSHGateway) dispatch(ctx context.Context, bearer, endpoint string
 		if err != nil {
 			return gateway.dshError(err)
 		}
-		_, permissionMode, seq := state.projection()
-		return gateway.sessionProjection(permissionMode, seq), true, "", "", nil
+		_, permissionMode, title, seq := state.projection()
+		return gateway.sessionProjection(permissionMode, seq, title), true, "", "", nil
 	case "session/page":
 		var request struct {
 			Address     map[string]any `json:"address"`
@@ -677,13 +682,15 @@ func (gateway *DSHGateway) executeCommand(ctx context.Context, bearer string, ar
 	state.mu.Lock()
 	expectedPermissionVersion := state.session.PermissionModeVersion
 	state.mu.Unlock()
-	result, err := gateway.backend.UpdatePermissionMode(ctx, bearer, gateway.config.WorkspaceID, request.AgentID, corecontract.UpdateUserSessionPermissionModeRequest{PermissionMode: mode, ExpectedPermissionModeVersion: expectedPermissionVersion})
+	_, err = gateway.backend.UpdatePermissionMode(ctx, bearer, gateway.config.WorkspaceID, request.AgentID, corecontract.UpdateUserSessionPermissionModeRequest{PermissionMode: mode, ExpectedPermissionModeVersion: expectedPermissionVersion})
 	if err != nil {
 		return gateway.dshError(err)
 	}
-	gateway.installSession(result.Session)
-	// The control projection carries current permissions. Do not invent a
-	// process-local journal entry that cannot be replayed on another replica.
+	// The mutation and its journal entry commit atomically in Core. Replaying
+	// that entry gives the control projection a real, replica-stable position.
+	if err := gateway.refreshJournal(ctx, bearer, state); err != nil {
+		return gateway.dshError(err)
+	}
 	return map[string]any{"commandId": uuid.New().String(), "result": map[string]any{"kind": "success", "text": "permission " + mode}}, true, "", "", nil
 }
 
@@ -851,6 +858,11 @@ func (gateway *DSHGateway) workspaceView() map[string]any {
 
 func (gateway *DSHGateway) summary(session corecontract.UserSessionState) map[string]any {
 	row := map[string]any{"agentAvailable": true, "sessionId": session.SessionID, "updatedAt": session.UpdatedAt.UnixMilli(), "running": session.ActiveRunID != "", "blank": session.Version <= 1}
+	var title any
+	if session.TitleSource != "placeholder" && session.Title != "" {
+		title = session.Title
+	}
+	row["projections"] = map[string]any{"kind": "cached", "values": map[string]any{"title": title}}
 	if session.WorkingDirectory != "" && session.WorkingDirectory != "." {
 		row["cwd"] = session.WorkingDirectory
 	}
@@ -887,10 +899,15 @@ func (gateway *DSHGateway) defaultModelSelection() map[string]any {
 	return map[string]any{"provider": gateway.config.ModelProvider, "model": gateway.config.Model}
 }
 
-func (gateway *DSHGateway) sessionProjection(permissionMode string, seq int64) map[string]any {
+func (gateway *DSHGateway) sessionProjection(permissionMode string, seq int64, titles ...string) map[string]any {
+	var title any
+	if len(titles) > 0 && titles[0] != "" {
+		title = titles[0]
+	}
 	return map[string]any{
 		"asOfSeq": seq,
 		"values": map[string]any{
+			"title":       title,
 			"permissions": map[string]any{"currentValue": permissionMode},
 			// The client contract uses lastUsed/next, not the Host's internal
 			// pending field. Catalog alone leaves ModelDirectory loading forever.

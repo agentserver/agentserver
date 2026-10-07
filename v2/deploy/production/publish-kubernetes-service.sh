@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Service-only repair; keep the qualified runtime, harness and node profiles.
+# Application repair; optionally rebuild harness, retaining qualified sandbox
+# runtime, gateway, Codex bundle and node profiles.
 v2_root=$(cd "$(dirname "$0")/../.." && pwd)
 : "${RELEASE_DIRECTORY:?}" "${GITHUB_SHA:?}"
 test ! -e "$RELEASE_DIRECTORY"
@@ -19,3 +20,19 @@ docker buildx build --platform linux/amd64 --load --build-arg "SOURCE_REVISION=$
   -t "$image" -f "$v2_root/deploy/production/kubernetes-service.Containerfile" "$RELEASE_DIRECTORY/service"
 docker push "$image"
 docker inspect --format '{{index .RepoDigests 0}}' "$image" >"$RELEASE_DIRECTORY/service.image"
+
+if [ "${PUBLISH_HARNESS:-false}" = true ]; then
+  mkdir -p "$RELEASE_DIRECTORY/harness/bin"
+  harness_base=$(jq -er '.images.harness' "$v2_root/deploy/production/kubernetes-published-images.json")
+  for binary in harness-pool harness-worker harness-init agentserver-probe; do
+    destination=$binary
+    if [ "$binary" = harness-init ]; then destination=agentserver-init; fi
+    go -C "$v2_root" build -trimpath -ldflags='-s -w' -o "$RELEASE_DIRECTORY/harness/bin/$destination" "./cmd/$binary"
+  done
+  harness_image="ghcr.io/agentserver/v2-harness:k8s-harness-$GITHUB_SHA"
+  docker buildx build --platform linux/amd64 --load \
+    --build-arg "SOURCE_REVISION=$GITHUB_SHA" --build-arg "HARNESS_BASE=$harness_base" \
+    -t "$harness_image" -f "$v2_root/deploy/production/kubernetes-harness.Containerfile" "$RELEASE_DIRECTORY/harness"
+  docker push "$harness_image"
+  docker inspect --format '{{index .RepoDigests 0}}' "$harness_image" >"$RELEASE_DIRECTORY/harness.image"
+fi

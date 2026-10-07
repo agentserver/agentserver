@@ -76,13 +76,10 @@ func (backend *CoreRunBackend) GetTranscript(ctx context.Context, bearer, worksp
 	return result, err
 }
 
-func (backend *CoreRunBackend) GetJournal(ctx context.Context, bearer, workspaceID, sessionID, runID string, after int64) (corecontract.UserSessionJournalPage, error) {
+func (backend *CoreRunBackend) GetJournal(ctx context.Context, bearer, workspaceID, sessionID string, cursor int64) (corecontract.UserSessionJournalPage, error) {
 	path := corecontract.UserSessionJournalPath(workspaceID, sessionID)
 	query := url.Values{}
-	if runID != "" {
-		query.Set("runId", runID)
-		query.Set("after", fmt.Sprint(after))
-	}
+	query.Set("cursor", fmt.Sprint(cursor))
 	endpoint := backend.endpoint(path)
 	endpoint.RawQuery = query.Encode()
 	var page corecontract.UserSessionJournalPage

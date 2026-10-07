@@ -22,6 +22,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/safediagnostic"
+	"github.com/agentserver/agentserver/v2/internal/sessiontitle"
 )
 
 const (
@@ -305,6 +306,16 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 
 	lifecycle := &recordingWorkerLifecycle{sink: control}
 	runnerOptions := workerRunnerOptions(bootstrap.Manifest, lifecycle)
+	if titles, ok := control.(interface {
+		SendSessionTitle(context.Context, sessiontitle.Proposal) error
+	}); ok {
+		runnerOptions.TitleHandler = titles.SendSessionTitle
+	}
+	if config.Logger != nil {
+		runnerOptions.TitleFailureHandler = func(stage string) {
+			config.Logger.Warn("session title generation failed; retaining fallback", "stage", stage)
+		}
+	}
 	runner, err := dependencies.newRunner(process, bridge, runnerOptions)
 	if err != nil {
 		bridge.Close(err)

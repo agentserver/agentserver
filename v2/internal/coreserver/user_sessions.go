@@ -467,6 +467,7 @@ func (commands StateStoreUserSessionCommands) ArchiveSession(ctx context.Context
 func contractUserSession(session coredb.UserSession) corecontract.UserSessionState {
 	return corecontract.UserSessionState{
 		SessionID: session.ID, WorkspaceID: session.WorkspaceID, Title: session.Title,
+		TitleSource: session.TitleSource, TitleVersion: session.TitleVersion,
 		Status: session.Status, ActiveRunID: session.ActiveRunID, Version: session.Version,
 		PermissionMode: string(session.PermissionMode), PermissionModeVersion: session.PermissionModeVersion,
 		EnvironmentID: session.WorkingEnvironmentID, WorkingDirectory: session.WorkingDirectory,

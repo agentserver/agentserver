@@ -9,8 +9,32 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/runevent"
+	"github.com/agentserver/agentserver/v2/internal/sessiontitle"
 )
+
+func TestTitleProposalUsesExistingAttemptAuthority(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	prepared.FrozenCatalog.ThreadID = "thread-runtime-1"
+	core := newRuntimeAppendCore(prepared)
+	authority := &attemptLifecycleAuthority{ctx: t.Context(), scheduler: &poolTestScheduler{}, core: core, identities: &runtimeSequenceIdentityAllocator{}, prepared: prepared, threadID: "thread-runtime-1", turnID: "turn-runtime-1", turnWasAccepted: true}
+	event := harnesscontrol.Event{Kind: harnesscontrol.EventKindSessionTitle, SessionTitle: &harnesscontrol.SessionTitleEvent{Kind: harnesscontrol.EventKindSessionTitle, Title: "检查权限", Source: "generated"}}
+	if err := authority.RuntimeEvent(t.Context(), AttemptRuntimeEvent{ControlSequence: 3, Event: event}); err != nil {
+		t.Fatal(err)
+	}
+	requests := core.appendSnapshot()
+	if len(requests) != 1 || len(requests[0].Events) != 1 || requests[0].Events[0].Kind != sessiontitle.EventKind || requests[0].RunID != prepared.Scheduled.Claim.Run.RunID {
+		t.Fatalf("title escaped run authority: %+v", requests)
+	}
+	if authority.runtimeCursor != 3 {
+		t.Fatal("title ACK preceded append")
+	}
+	event.SessionTitle.Source = "manual"
+	if err := authority.RuntimeEvent(t.Context(), AttemptRuntimeEvent{ControlSequence: 4, Event: event}); err == nil {
+		t.Fatal("worker impersonated manual rename")
+	}
+}
 
 func TestAttemptRuntimeAuthorityAppendsCanonicalEventsBeforeAdvancingCursor(t *testing.T) {
 	prepared := poolTestPreparedLaunch(t)

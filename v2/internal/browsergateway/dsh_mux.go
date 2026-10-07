@@ -259,7 +259,7 @@ func (gateway *DSHGateway) openStream(ctx context.Context, bearer string, args m
 				records = records[len(records)-request.MaxMessages:]
 				hasMore = true
 			}
-			snapshot := map[string]any{"type": "snapshot", "header": header, "cursor": cursor, "records": records, "hasMore": hasMore, "projections": gateway.sessionProjection(state.permissionMode(), cursor)}
+			snapshot := map[string]any{"type": "snapshot", "header": header, "cursor": cursor, "records": records, "hasMore": hasMore, "projections": gateway.sessionProjection(state.permissionMode(), cursor, state.title())}
 			if request.AssistantStream {
 				snapshot["assistantStream"] = state.assistantBaseline()
 			}
@@ -326,33 +326,54 @@ func (gateway *DSHGateway) openStream(ctx context.Context, bearer string, args m
 			}
 		}()
 	case "session/control":
+		baseline, err := gateway.controlProjections(ctx, bearer)
+		if err != nil {
+			return nil, err
+		}
 		go func() {
 			defer close(out)
-			out <- map[string]any{"type": "baseline", "value": map[string]any{"projections": gateway.projectionBaseline()}}
+			send := func(value any) bool {
+				select {
+				case out <- value:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			}
+			if !send(map[string]any{"type": "baseline", "value": map[string]any{"projections": baseline}}) {
+				return
+			}
 			ticker := time.NewTicker(500 * time.Millisecond)
 			defer ticker.Stop()
-			last := map[string]string{}
+			last := map[string]int64{}
+			for id, value := range baseline {
+				last[id] = value.(map[string]any)["asOfSeq"].(int64)
+			}
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					gateway.mu.Lock()
-					states := make([]*dshSessionState, 0, len(gateway.sessions))
-					for _, state := range gateway.sessions {
-						states = append(states, state)
+					projections, err := gateway.controlProjections(ctx, bearer)
+					if err != nil {
+						send(dshFollowFailure{err: err})
+						return
 					}
-					gateway.mu.Unlock()
-					for _, state := range states {
-						sessionID, mode, seq := state.projection()
-						if last[sessionID] == mode {
+					for sessionID, value := range projections {
+						block := value.(map[string]any)
+						seq := block["asOfSeq"].(int64)
+						if previous, ok := last[sessionID]; ok && seq <= previous {
 							continue
 						}
-						last[sessionID] = mode
 						if seq < 0 {
 							continue
 						}
-						out <- map[string]any{"type": "projection", "sessionId": sessionID, "key": "permissions", "value": map[string]any{"currentValue": mode}, "seq": seq}
+						last[sessionID] = seq
+						for _, key := range []string{"permissions", "title"} {
+							if !send(map[string]any{"type": "projection", "sessionId": sessionID, "key": key, "value": block["values"].(map[string]any)[key], "seq": seq}) {
+								return
+							}
+						}
 					}
 				}
 			}
@@ -386,17 +407,26 @@ func (gateway *DSHGateway) openStream(ctx context.Context, bearer string, args m
 	return out, nil
 }
 
-func (gateway *DSHGateway) projectionBaseline() map[string]any {
+// Membership-scoped refresh, including changes written through another replica
+// or the platform API. Cache residency alone is never read authorization.
+func (gateway *DSHGateway) controlProjections(ctx context.Context, bearer string) (map[string]any, error) {
 	result := map[string]any{}
-	gateway.mu.Lock()
-	states := make([]*dshSessionState, 0, len(gateway.sessions))
-	for _, state := range gateway.sessions {
-		states = append(states, state)
+	sessions, err := gateway.backend.ListSessions(ctx, bearer, gateway.config.WorkspaceID)
+	if err != nil {
+		return nil, err
 	}
-	gateway.mu.Unlock()
-	for _, state := range states {
-		sessionID, mode, seq := state.projection()
-		result[sessionID] = gateway.sessionProjection(mode, seq)
+	for _, session := range sessions.Sessions {
+		state := gateway.installSession(session)
+		state.mu.Lock()
+		refresh := state.projectedPermissionVersion != session.PermissionModeVersion || state.projectedTitleVersion != session.TitleVersion
+		state.mu.Unlock()
+		if refresh {
+			if err := gateway.refreshJournal(ctx, bearer, state); err != nil {
+				return nil, err
+			}
+		}
+		sessionID, mode, title, seq := state.projection()
+		result[sessionID] = gateway.sessionProjection(mode, seq, title)
 	}
-	return result
+	return result, nil
 }

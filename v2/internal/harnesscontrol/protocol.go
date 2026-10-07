@@ -186,6 +186,15 @@ func DecodeEventPayload(raw []byte, limits Limits) (Event, error) {
 			return Event{}, err
 		}
 		event.TurnTerminal = &value
+	case EventKindSessionTitle:
+		var value SessionTitleEvent
+		if err := decodeRequiredObject(raw, &value, "kind", "title", "source"); err != nil {
+			return Event{}, malformed("decode session_title: %v", err)
+		}
+		if err := value.Validate(); err != nil {
+			return Event{}, err
+		}
+		event.SessionTitle = &value
 	case EventKindAppServerNotification:
 		var value AppServerNotificationEvent
 		if err := decodeRequiredObject(raw, &value, "kind", "method", "params"); err != nil {

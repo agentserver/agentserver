@@ -196,6 +196,16 @@
         }
       ]
     },
+    "sessionTitleEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "title", "source"],
+      "properties": {
+        "kind": {"const": "session_title"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 36},
+        "source": {"enum": ["fallback", "generated"]}
+      }
+    },
     "appServerNotificationEvent": {
       "type": "object",
       "additionalProperties": false,
@@ -294,6 +304,7 @@
             {"$ref": "#/$defs/turnAcceptedEvent"},
             {"$ref": "#/$defs/turnTerminalEvent"},
             {"$ref": "#/$defs/appServerNotificationEvent"},
+            {"$ref": "#/$defs/sessionTitleEvent"},
             {"$ref": "#/$defs/executorMCPProgressEvent"},
             {"$ref": "#/$defs/approvalRequestEvent"}
           ]

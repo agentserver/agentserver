@@ -272,7 +272,7 @@ func browserJSONResponse(request *http.Request, status int, value any) *http.Res
 
 func TestCoreBackendJournalEncodesQueryAndForwardsUserBearer(t *testing.T) {
 	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.Path != corecontract.UserSessionJournalPath(projectorWorkspaceID, projectorSessionID) || request.URL.Query().Get("runId") != projectorRunID || request.URL.Query().Get("after") != "128" || request.Header.Get("Authorization") != "Bearer user-token" {
+		if request.URL.Path != corecontract.UserSessionJournalPath(projectorWorkspaceID, projectorSessionID) || request.URL.Query().Get("cursor") != "128" || request.Header.Get("Authorization") != "Bearer user-token" {
 			t.Fatalf("journal request: %s", request.URL)
 		}
 		return browserJSONResponse(request, http.StatusOK, corecontract.UserSessionJournalPage{Session: corecontract.UserSessionState{SessionID: projectorSessionID}}), nil
@@ -281,7 +281,7 @@ func TestCoreBackendJournalEncodesQueryAndForwardsUserBearer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backend.GetJournal(t.Context(), "user-token", projectorWorkspaceID, projectorSessionID, projectorRunID, 128); err != nil {
+	if _, err := backend.GetJournal(t.Context(), "user-token", projectorWorkspaceID, projectorSessionID, 128); err != nil {
 		t.Fatal(err)
 	}
 }

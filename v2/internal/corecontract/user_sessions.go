@@ -39,6 +39,8 @@ type UserSessionState struct {
 	SessionID               string    `json:"sessionId"`
 	WorkspaceID             string    `json:"workspaceId"`
 	Title                   string    `json:"title"`
+	TitleSource             string    `json:"titleSource"`
+	TitleVersion            int64     `json:"titleVersion"`
 	Status                  string    `json:"status"`
 	ActiveRunID             string    `json:"activeRunId,omitempty"`
 	Version                 int64     `json:"version"`

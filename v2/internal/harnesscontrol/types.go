@@ -23,6 +23,7 @@ const (
 	EventKindThreadReady           = "thread_ready"
 	EventKindTurnAccepted          = "turn_accepted"
 	EventKindTurnTerminal          = "turn_terminal"
+	EventKindSessionTitle          = "session_title"
 	EventKindAppServerNotification = "app_server_notification"
 	EventKindExecutorMCPProgress   = "executor_mcp_progress"
 	EventKindApprovalRequest       = "approval_request"
@@ -180,6 +181,12 @@ type TurnTerminalEvent struct {
 	ErrorMessage   string `json:"errorMessage,omitempty"`
 }
 
+type SessionTitleEvent struct {
+	Kind   string `json:"kind"`
+	Title  string `json:"title"`
+	Source string `json:"source"`
+}
+
 // AppServerNotificationEvent preserves one already-validated stock
 // app-server notification without importing the Codex wire contract into the
 // control protocol. Params must be a bounded JSON object. The pool is the
@@ -246,6 +253,7 @@ type Event struct {
 	ThreadReady           *ThreadReadyEvent
 	TurnAccepted          *TurnAcceptedEvent
 	TurnTerminal          *TurnTerminalEvent
+	SessionTitle          *SessionTitleEvent
 	AppServerNotification *AppServerNotificationEvent
 	ExecutorMCPProgress   *ExecutorMCPProgressEvent
 	ApprovalRequest       *ApprovalRequestEvent

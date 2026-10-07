@@ -25,6 +25,8 @@ type UserSession struct {
 	WorkspaceID             string
 	CreatorID               string
 	Title                   string
+	TitleSource             string
+	TitleVersion            int64
 	Status                  string
 	ActiveRunID             string
 	Version                 int64
@@ -119,7 +121,7 @@ SELECT session.id::text, session.workspace_id::text, session.creator_id::text,
        session.version, session.permission_mode, session.permission_mode_version,
        session.working_environment_id::text, session.working_directory,
        session.working_directory_version,
-       session.created_at, session.updated_at
+       session.created_at, session.updated_at, session.title_source, session.title_version
 FROM %s AS session
 WHERE session.workspace_id = $1
   AND session.creator_id = $2
@@ -173,8 +175,8 @@ func (s *StateStore) CreateUserSession(ctx context.Context, command CreateUserSe
 			return CreateUserSessionResult{}, commandError(ErrorForbidden, operation, "workspace", command.WorkspaceID, "workspace role cannot create sessions")
 		}
 		insert := fmt.Sprintf(`
-INSERT INTO %s (id, workspace_id, creator_id, title, status)
-VALUES ($1, $2, $3, $4, 'active')
+INSERT INTO %s (id, workspace_id, creator_id, title, status, title_source)
+VALUES ($1, $2, $3, $4, 'active', CASE WHEN $4 IN ('New session','New conversation') THEN 'placeholder' ELSE 'manual' END)
 ON CONFLICT (id) DO NOTHING`, s.table("sessions"))
 		tag, err := transaction.Exec(ctx, insert, command.SessionID, command.WorkspaceID, command.ActorID, command.Title)
 		if err != nil {
@@ -358,12 +360,13 @@ func (s *StateStore) UpdateUserSession(ctx context.Context, command UpdateUserSe
 		if session.Version != command.ExpectedVersion {
 			return UpdateUserSessionResult{}, versionConflict(operation, "session", command.SessionID, session.Version)
 		}
-		if session.Title == command.Title {
+		if session.Title == command.Title && session.TitleSource == "manual" {
 			return UpdateUserSessionResult{Session: session, Changed: false}, nil
 		}
 		update := fmt.Sprintf(`
 UPDATE %s
-SET title = $2, version = version + 1, updated_at = pg_catalog.clock_timestamp()
+SET title = $2, title_source = 'manual', title_version = title_version + 1,
+    version = version + 1, updated_at = pg_catalog.clock_timestamp()
 WHERE id = $1`, s.table("sessions"))
 		if _, err := transaction.Exec(ctx, update, command.SessionID, command.Title); err != nil {
 			return UpdateUserSessionResult{}, databaseError(operation+" update session", err)
@@ -419,7 +422,7 @@ SELECT session.id::text, session.workspace_id::text, session.creator_id::text,
        session.version, session.permission_mode, session.permission_mode_version,
        session.working_environment_id::text, session.working_directory,
        session.working_directory_version,
-       session.created_at, session.updated_at
+       session.created_at, session.updated_at, session.title_source, session.title_version
 FROM %s AS session
 JOIN %s AS workspace
   ON workspace.id = session.workspace_id AND workspace.status = 'active'
@@ -457,6 +460,7 @@ func scanUserSession(row userSessionRowScanner) (UserSession, error) {
 		&session.Status, &activeRunID, &session.Version, &session.PermissionMode,
 		&session.PermissionModeVersion, &workingEnvironmentID, &session.WorkingDirectory,
 		&session.WorkingDirectoryVersion, &session.CreatedAt, &session.UpdatedAt,
+		&session.TitleSource, &session.TitleVersion,
 	)
 	if activeRunID != nil {
 		session.ActiveRunID = *activeRunID

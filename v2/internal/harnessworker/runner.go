@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/sessiontitle"
 )
 
 const (
@@ -37,6 +38,8 @@ type AppServerRunnerOptions struct {
 	InterruptGrace      time.Duration
 	MaxPromptTextBytes  int
 	LifecycleSink       AppServerLifecycleSink
+	TitleHandler        func(context.Context, sessiontitle.Proposal) error
+	TitleFailureHandler func(string)
 }
 
 // AppServerLifecycleSink synchronously crosses the holder/core authority
@@ -284,6 +287,7 @@ type appServerProtocolState struct {
 	turnStarted   bool
 	dropEvents    bool
 	interruptID   int64
+	title         *temporaryTitle
 }
 
 type appServerInitializeParams struct {
@@ -614,6 +618,10 @@ func (r *AppServerRunner) Run(ctx context.Context, request AppServerRunRequest) 
 		}
 	}
 
+	if cancellation == nil && request.Start != nil && r.options.TitleHandler != nil {
+		state.startTitle(ctx, result.Thread.ModelProvider)
+	}
+	defer state.stopTitle()
 	terminal, runErr := state.runTurn(ctx, cancellation)
 	result.Terminal = terminal
 	if runErr != nil {
@@ -980,6 +988,8 @@ func (s *appServerProtocolState) runTurn(ctx context.Context, initialAbort error
 			}
 		case <-timeout:
 			return AppServerTerminal{}, errors.Join(abort.cause, errors.New("turn/interrupt did not reach a terminal before cleanup grace expired"))
+		case <-s.titleTimeout():
+			s.failTitle("timeout")
 		case event, ok := <-bridgeEvents:
 			if !ok {
 				bridgeEvents = nil
@@ -1034,6 +1044,9 @@ func (s *appServerProtocolState) runTurn(ctx context.Context, initialAbort error
 				return AppServerTerminal{}, cause
 			}
 			message := read.message
+			if s.consumeTitleMessage(ctx, message) {
+				continue
+			}
 			switch message.Kind {
 			case codexwire.KindNotification:
 				terminal, notificationErr := s.processNotification(message)

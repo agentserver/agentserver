@@ -8,11 +8,10 @@ import (
 	"strconv"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
-	"github.com/agentserver/agentserver/v2/internal/runevent"
 )
 
 type UserSessionJournalCommands interface {
-	GetJournal(context.Context, string, string, string, string, int64) (corecontract.UserSessionJournalPage, error)
+	GetJournal(context.Context, string, string, string, int64) (corecontract.UserSessionJournalPage, error)
 }
 
 func (handler *UserSessionHandler) journal(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +37,7 @@ func (handler *UserSessionHandler) journal(w http.ResponseWriter, r *http.Reques
 		writePublicRunError(w, http.StatusServiceUnavailable, "unavailable", "session journal is unavailable", "")
 		return
 	}
-	page, err := commands.GetJournal(r.Context(), r.PathValue("workspaceId"), r.PathValue("sessionId"), actor, query.runID, query.after)
+	page, err := commands.GetJournal(r.Context(), r.PathValue("workspaceId"), r.PathValue("sessionId"), actor, query.cursor)
 	if err != nil {
 		handler.writeError(w, r, err)
 		return
@@ -47,8 +46,7 @@ func (handler *UserSessionHandler) journal(w http.ResponseWriter, r *http.Reques
 }
 
 type journalQuery struct {
-	runID string
-	after int64
+	cursor int64
 }
 
 func parseJournalQuery(r *http.Request) (journalQuery, error) {
@@ -58,43 +56,45 @@ func parseJournalQuery(r *http.Request) (journalQuery, error) {
 		return query, errors.New("invalid journal query")
 	}
 	for key, value := range values {
-		if len(value) != 1 || (key != "runId" && key != "after") {
-			return query, errors.New("session journal accepts one runId and after")
+		if len(value) != 1 || key != "cursor" {
+			return query, errors.New("session journal accepts one cursor")
 		}
 	}
-	query.runID = values.Get("runId")
-	if value, ok := values["after"]; ok {
-		query.after, err = strconv.ParseInt(value[0], 10, 64)
+	if value, ok := values["cursor"]; ok {
+		query.cursor, err = strconv.ParseInt(value[0], 10, 64)
 	}
-	if err != nil || query.after < 0 || (query.runID == "" && query.after != 0) {
+	if err != nil || query.cursor < 0 || query.cursor >= 9007199254740991 {
 		return query, errors.New("invalid journal cursor")
 	}
 	return query, nil
 }
 
-func (commands StateStoreUserSessionCommands) GetJournal(ctx context.Context, workspaceID, sessionID, actorID, runID string, after int64) (corecontract.UserSessionJournalPage, error) {
+func (commands StateStoreUserSessionCommands) GetJournal(ctx context.Context, workspaceID, sessionID, actorID string, cursor int64) (corecontract.UserSessionJournalPage, error) {
 	if commands.Store == nil || commands.Prompts == nil {
 		return corecontract.UserSessionJournalPage{}, errors.New("journal readers required")
 	}
-	source, err := commands.Store.ReadUserSessionJournal(ctx, workspaceID, sessionID, actorID, runID, after)
+	source, err := commands.Store.ReadUserSessionJournal(ctx, workspaceID, sessionID, actorID, cursor)
 	if err != nil {
 		return corecontract.UserSessionJournalPage{}, err
 	}
-	page := corecontract.UserSessionJournalPage{Session: contractUserSession(source.Session), RunID: source.Run.ID, AfterSeq: source.AfterSeq, HasMore: source.HasMore, Events: []runevent.Event{}}
-	if source.IncludePrompt {
-		page.RequestID = source.RequestID
-		prompt, err := commands.Prompts.ReadUserPrompt(ctx, UserPromptReadRequest{WorkspaceID: workspaceID, Pointer: source.Run.Prompt})
-		if err != nil {
-			return page, err
+	page := corecontract.UserSessionJournalPage{Session: contractUserSession(source.Session), Cursor: source.Cursor, HasMore: source.HasMore, Entries: []corecontract.UserSessionJournalEntry{}}
+	for _, value := range source.Entries {
+		entry := corecontract.UserSessionJournalEntry{Seq: value.Seq, Kind: value.Kind, CreatedAt: value.CreatedAt, PermissionMode: value.PermissionMode, PermissionVersion: value.PermissionVersion, RequestID: value.RequestID, Title: value.Title, TitleSource: value.TitleSource, TitleVersion: value.TitleVersion}
+		switch value.Kind {
+		case "prompt":
+			prompt, err := commands.Prompts.ReadUserPrompt(ctx, UserPromptReadRequest{WorkspaceID: workspaceID, Pointer: value.Run.Prompt})
+			if err != nil {
+				return page, err
+			}
+			entry.Prompt = &corecontract.UserSessionTranscriptMessage{MessageID: "user-" + value.Run.ID, RunID: value.Run.ID, Role: "user", Content: prompt, Complete: true, CreatedAt: value.Run.CreatedAt}
+		case "run_event":
+			event, err := contractUserSessionTranscriptEvent(workspaceID, sessionID, value.Event)
+			if err != nil {
+				return page, err
+			}
+			entry.Event = &event
 		}
-		page.Prompt = &corecontract.UserSessionTranscriptMessage{MessageID: "user-" + source.Run.ID, RunID: source.Run.ID, Role: "user", Content: prompt, Complete: true, CreatedAt: source.Run.CreatedAt}
-	}
-	for _, value := range source.Events {
-		event, err := contractUserSessionTranscriptEvent(workspaceID, sessionID, value)
-		if err != nil {
-			return page, err
-		}
-		page.Events = append(page.Events, event)
+		page.Entries = append(page.Entries, entry)
 	}
 	return page, nil
 }

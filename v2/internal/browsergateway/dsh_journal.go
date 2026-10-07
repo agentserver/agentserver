@@ -20,17 +20,31 @@ func (gateway *DSHGateway) refreshJournal(ctx context.Context, bearer string, st
 		state.journalApprovals = map[string]runevent.Event{}
 	}
 	for {
-		page, err := gateway.backend.GetJournal(ctx, bearer, gateway.config.WorkspaceID, sessionID, state.journalRunID, state.journalSeq)
+		page, err := gateway.backend.GetJournal(ctx, bearer, gateway.config.WorkspaceID, sessionID, state.journalCursor)
 		if err != nil {
 			return err
 		}
-		if err = validateDSHJournalPage(page, gateway.config.WorkspaceID, sessionID, state.journalRunID, state.journalSeq); err != nil {
+		if err = validateDSHJournalPage(page, gateway.config.WorkspaceID, sessionID, state.journalCursor); err != nil {
 			return err
 		}
-		if page.Prompt != nil {
-			state.appendJournalPrompt(*page.Prompt, page.RequestID)
+		runID, runSeq, err := validateJournalRunContinuity(page, state.journalRunID, state.journalRunSeq)
+		if err != nil {
+			return err
 		}
-		for _, event := range page.Events {
+		for _, entry := range page.Entries {
+			if entry.Kind == "title" {
+				state.appendJournalTitle(entry)
+				continue
+			}
+			if entry.Kind == "prompt" {
+				state.appendJournalPrompt(*entry.Prompt, entry.RequestID)
+				continue
+			}
+			if entry.Kind == "permission" {
+				state.appendJournalPermission(entry)
+				continue
+			}
+			event := *entry.Event
 			state.mapCanonical(event)
 			if event.Kind == runevent.KindApprovalRequested {
 				payload, _ := runevent.DecodeSemanticPayload(event)
@@ -42,7 +56,8 @@ func (gateway *DSHGateway) refreshJournal(ctx context.Context, bearer string, st
 				gateway.cancelApproval(event)
 			}
 		}
-		state.journalRunID, state.journalSeq = page.RunID, page.AfterSeq
+		state.journalCursor = page.Cursor
+		state.journalRunID, state.journalRunSeq = runID, runSeq
 		state.mu.Lock()
 		state.session = page.Session
 		state.mu.Unlock()
@@ -62,37 +77,73 @@ func (gateway *DSHGateway) refreshJournal(ctx context.Context, bearer string, st
 	}
 }
 
-func validateDSHJournalPage(page corecontract.UserSessionJournalPage, workspaceID, sessionID, runID string, after int64) error {
+// The session cursor and the canonical run cursor are distinct. Enforce both,
+// including across page boundaries and permission entries between model items.
+func validateJournalRunContinuity(page corecontract.UserSessionJournalPage, runID string, runSeq int64) (string, int64, error) {
+	for _, entry := range page.Entries {
+		switch entry.Kind {
+		case "prompt":
+			if entry.Prompt.RunID == runID {
+				return "", 0, errors.New("journal repeated committed prompt")
+			}
+			runID, runSeq = entry.Prompt.RunID, 0
+		case "run_event":
+			if entry.Event.RunID != runID || entry.Event.Seq != runSeq+1 {
+				return "", 0, errors.New("journal canonical run continuity mismatch")
+			}
+			runSeq = entry.Event.Seq
+		}
+	}
+	return runID, runSeq, nil
+}
+
+func validateDSHJournalPage(page corecontract.UserSessionJournalPage, workspaceID, sessionID string, after int64) error {
 	if page.Session.SessionID != sessionID || page.Session.WorkspaceID != workspaceID {
 		return errors.New("journal escaped requested session")
 	}
 	seq := after
-	if page.RunID != runID {
-		if page.RunID == "" || page.Prompt == nil {
-			return errors.New("journal changed run without committed prompt")
+	for _, entry := range page.Entries {
+		if entry.Seq != seq+1 {
+			return errors.New("journal entry continuity mismatch")
 		}
-		seq = 0
-	} else if page.Prompt != nil {
-		return errors.New("journal repeated committed prompt")
-	}
-	if page.Prompt != nil && (page.Prompt.RunID != page.RunID || !page.Prompt.Complete || page.Prompt.Role != "user") {
-		return errors.New("invalid journal prompt")
-	}
-	for _, event := range page.Events {
-		if event.WorkspaceID != workspaceID || event.SessionID != sessionID || event.RunID != page.RunID || event.Seq != seq+1 {
-			return errors.New("journal event scope or continuity mismatch")
-		}
-		if err := event.Validate(); err != nil {
-			return err
-		}
-		if runevent.IsKnownKind(event.Kind) {
-			if _, err := runevent.DecodeSemanticPayload(event); err != nil {
+		switch entry.Kind {
+		case "title":
+			if entry.Event != nil || entry.Prompt != nil || entry.TitleVersion < 1 || entry.Title == "" || len(entry.Title) > 256 {
+				return errors.New("invalid journal title")
+			}
+			if entry.TitleSource != "placeholder" && entry.TitleSource != "fallback" && entry.TitleSource != "manual" && entry.TitleSource != "generated" {
+				return errors.New("invalid journal title source")
+			}
+		case "prompt":
+			if entry.Prompt == nil || entry.Event != nil || entry.Prompt.RunID == "" || !entry.Prompt.Complete || entry.Prompt.Role != "user" {
+				return errors.New("invalid journal prompt")
+			}
+		case "permission":
+			if entry.Event != nil || entry.Prompt != nil || entry.PermissionVersion < 1 || (entry.PermissionMode != "read-only" && entry.PermissionMode != "auto" && entry.PermissionMode != "full-access") {
+				return errors.New("invalid journal permission")
+			}
+		case "run_event":
+			if entry.Event == nil || entry.Prompt != nil {
+				return errors.New("invalid journal event")
+			}
+			event := *entry.Event
+			if event.WorkspaceID != workspaceID || event.SessionID != sessionID {
+				return errors.New("journal event escaped requested session")
+			}
+			if err := event.Validate(); err != nil {
 				return err
 			}
+			if runevent.IsKnownKind(event.Kind) {
+				if _, err := runevent.DecodeSemanticPayload(event); err != nil {
+					return err
+				}
+			}
+		default:
+			return errors.New("unknown journal entry kind")
 		}
-		seq = event.Seq
+		seq = entry.Seq
 	}
-	if page.AfterSeq != seq || (page.HasMore && page.Prompt == nil && len(page.Events) == 0) {
+	if page.Cursor != seq || (page.HasMore && len(page.Entries) == 0) {
 		return errors.New("journal cursor did not advance")
 	}
 	return nil

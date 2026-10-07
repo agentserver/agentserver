@@ -33,6 +33,7 @@ func TestCanonicalRunEventJSONSchemaAcceptsGoContractAndRejectsUnsafeKnownPayloa
             "presentation":{"kind":"command","command":{"command":"pwd","output":"/workspace","status":"succeeded"}}
         }`)),
 		contractEvent(KindRunCompleted, json.RawMessage(`{"result":{"answer":42}}`)),
+		contractEvent("session.title.proposed", json.RawMessage(`{"title":"检查权限","source":"generated"}`)),
 	}
 	approval := contractEvent(KindApprovalRequested, json.RawMessage(`{
         "runId":"40000000-0000-4000-8000-000000000004",

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+	"github.com/agentserver/agentserver/v2/internal/sessiontitle"
 )
 
 const (
@@ -38,6 +39,7 @@ const (
 )
 
 var knownKinds = map[string]struct{}{
+	sessiontitle.EventKind: {},
 	KindAssistantMessageStarted:   {},
 	KindAssistantMessageDelta:     {},
 	KindAssistantMessageCompleted: {},
@@ -173,6 +175,10 @@ func DecodeSemanticPayload(event Event) (any, error) {
 	}
 
 	switch event.Kind {
+	case sessiontitle.EventKind:
+		payload,err := decodePayload[sessiontitle.Proposal](event.Payload)
+		if err==nil {err=payload.Validate()}
+		return payload,wrapPayloadError(event.Kind,err)
 	case KindAssistantMessageStarted, KindAssistantReasoningStarted:
 		payload, err := decodePayload[MessageStartedPayload](event.Payload)
 		if err == nil {

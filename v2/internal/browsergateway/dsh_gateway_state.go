@@ -21,17 +21,56 @@ func (state *dshSessionState) lastSeq() int64 {
 func (state *dshSessionState) permissionMode() string {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	return state.session.PermissionMode
+	return state.projectedPermission
 }
 
-func (state *dshSessionState) projection() (string, string, int64) {
+func (state *dshSessionState) projection() (string, string, string, int64) {
+	state.journalMu.Lock()
+	defer state.journalMu.Unlock()
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	seq := state.nextSeq - 1
 	if len(state.events) == 0 {
 		seq = -1
 	}
-	return state.session.SessionID, state.session.PermissionMode, seq
+	return state.session.SessionID, state.projectedPermission, state.projectedTitle, seq
+}
+
+func (state *dshSessionState) title() string {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.projectedTitle
+}
+
+func (state *dshSessionState) appendJournalTitle(entry corecontract.UserSessionJournalEntry) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.projectedTitleVersion = entry.TitleVersion
+	if entry.TitleSource == "placeholder" {
+		state.projectedTitle = ""
+		return
+	}
+	state.projectedTitle = entry.Title
+	source := map[string]any{"kind": "user"}
+	if entry.TitleSource == "fallback" {
+		source["kind"] = "fallback"
+	}
+	if entry.TitleSource == "generated" {
+		source = map[string]any{"kind": "provider", "provider": "agentserver-codex-title"}
+	}
+	messageSeqs := []int64{}
+	if entry.TitleSource != "manual" && state.firstPromptSeq != nil {
+		messageSeqs = append(messageSeqs, *state.firstPromptSeq)
+	}
+	state.appendLocked("session/title", entry.CreatedAt.UnixMilli(), map[string]any{"title": entry.Title, "messageSeqs": messageSeqs, "source": source})
+}
+
+func (state *dshSessionState) appendJournalPermission(entry corecontract.UserSessionJournalEntry) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.projectedPermission = entry.PermissionMode
+	state.projectedPermissionVersion = entry.PermissionVersion
+	state.appendLocked("permission/preset", entry.CreatedAt.UnixMilli(), map[string]any{"preset": entry.PermissionMode})
 }
 
 func (state *dshSessionState) terminal() bool {
@@ -48,6 +87,10 @@ func (state *dshSessionState) appendJournalPrompt(message corecontract.UserSessi
 	state.openSteps = map[int]bool{}
 	now := message.CreatedAt.UnixMilli()
 	state.appendLocked("turn/start", now, map[string]any{"turn": state.currentTurn})
+	if state.firstPromptSeq == nil {
+		seq := state.nextSeq
+		state.firstPromptSeq = &seq
+	}
 	state.appendLocked("user/message", now, map[string]any{
 		"role": "user", "content": []any{map[string]any{"type": "text", "text": message.Content}},
 		"source": map[string]any{"kind": "user", "rpcId": requestID}, "id": message.MessageID,

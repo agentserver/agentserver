@@ -104,9 +104,15 @@ RETURNING next_event_seq - $1`, s.table("runs"))
 		}
 
 		nextSequence := firstSequence
+		if err := s.lockTitleProposalSession(ctx, transaction, run, command.Events); err != nil {
+			return AppendAttemptEventsResult{}, err
+		}
 		for _, index := range newEventIndexes {
 			event := command.Events[index]
 			if err := s.insertAttemptEvent(ctx, transaction, command, event, nextSequence); err != nil {
+				return AppendAttemptEventsResult{}, err
+			}
+			if err := s.applySessionTitleProposal(ctx, transaction, run, event); err != nil {
 				return AppendAttemptEventsResult{}, err
 			}
 			result.Events[index].RunSeq = nextSequence

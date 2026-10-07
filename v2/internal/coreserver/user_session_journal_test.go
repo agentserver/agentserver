@@ -11,12 +11,12 @@ import (
 
 type recordingJournalCommands struct {
 	recordingUserSessionCommands
-	actor, runID string
-	after        int64
+	actor string
+	after int64
 }
 
-func (c *recordingJournalCommands) GetJournal(_ context.Context, workspaceID, sessionID, actorID, runID string, after int64) (corecontract.UserSessionJournalPage, error) {
-	c.actor, c.runID, c.after = actorID, runID, after
+func (c *recordingJournalCommands) GetJournal(_ context.Context, workspaceID, sessionID, actorID string, after int64) (corecontract.UserSessionJournalPage, error) {
+	c.actor, c.after = actorID, after
 	return corecontract.UserSessionJournalPage{Session: corecontract.UserSessionState{WorkspaceID: workspaceID, SessionID: sessionID}}, nil
 }
 func TestSessionJournalRequiresUserAndWorkloadTranscriptAuthority(t *testing.T) {
@@ -27,13 +27,13 @@ func TestSessionJournalRequiresUserAndWorkloadTranscriptAuthority(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, corecontract.UserSessionJournalPath(userSessionTestWorkspace, userSessionTestSession)+"?runId="+userRunID+"&after=128", nil)
+	request := httptest.NewRequest(http.MethodGet, corecontract.UserSessionJournalPath(userSessionTestWorkspace, userSessionTestSession)+"?cursor=128", nil)
 	response := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(response, request)
-	if response.Code != http.StatusOK || users.action != "sessions.transcript" || workload.action != "sessions.transcript" || c.actor != userSessionTestActor || c.after != 128 || c.runID != userRunID {
+	if response.Code != http.StatusOK || users.action != "sessions.transcript" || workload.action != "sessions.transcript" || c.actor != userSessionTestActor || c.after != 128 {
 		t.Fatalf("journal response=%d %s authority=%s/%s command=%+v", response.Code, response.Body, users.action, workload.action, c)
 	}
-	for _, query := range []string{"after=-1", "after=1", "after=0&after=1", "bad=1", "after=%zz"} {
+	for _, query := range []string{"cursor=-1", "cursor=9007199254740991", "cursor=0&cursor=1", "bad=1", "cursor=%zz", "runId=old&after=1"} {
 		request = httptest.NewRequest(http.MethodGet, corecontract.UserSessionJournalPath(userSessionTestWorkspace, userSessionTestSession)+"?"+query, nil)
 		response = httptest.NewRecorder()
 		handler.Routes().ServeHTTP(response, request)

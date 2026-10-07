@@ -21,25 +21,28 @@ type journalTestBackend struct {
 	readError error
 }
 
-func (b *journalTestBackend) GetJournal(_ context.Context, _ string, workspaceID, sessionID, runID string, after int64) (corecontract.UserSessionJournalPage, error) {
+func (b *journalTestBackend) GetJournal(_ context.Context, _ string, workspaceID, sessionID string, after int64) (corecontract.UserSessionJournalPage, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.readError != nil {
 		return corecontract.UserSessionJournalPage{}, b.readError
 	}
-	page := corecontract.UserSessionJournalPage{Session: b.sessions[0], RunID: projectorRunID, AfterSeq: after}
+	page := corecontract.UserSessionJournalPage{Session: b.sessions[0], Cursor: after}
 	page.Session.WorkspaceID = workspaceID
-	if runID == "" {
-		page.RequestID = "prompt-rpc-1"
-		page.Prompt = &corecontract.UserSessionTranscriptMessage{MessageID: "user-" + projectorRunID, RunID: projectorRunID, Role: "user", Content: "列出所有执行环境", Complete: true, CreatedAt: time.Unix(100, 0)}
+	entries := []corecontract.UserSessionJournalEntry{
+		{Seq: 1, Kind: "permission", PermissionMode: "full-access", PermissionVersion: 1, CreatedAt: time.Unix(99, 0)},
+		{Seq: 2, Kind: "prompt", RequestID: "prompt-rpc-1", Prompt: &corecontract.UserSessionTranscriptMessage{MessageID: "user-" + projectorRunID, RunID: projectorRunID, Role: "user", Content: "列出所有执行环境", Complete: true, CreatedAt: time.Unix(100, 0)}},
 	}
-	end := len(b.events)
+	for _, event := range b.events {
+		entries = append(entries, corecontract.UserSessionJournalEntry{Seq: int64(len(entries) + 1), Kind: "run_event", Event: &event})
+	}
+	end := len(entries)
 	if b.pageSize > 0 && int(after)+b.pageSize < end {
 		end = int(after) + b.pageSize
 		page.HasMore = true
 	}
-	page.Events = append([]runevent.Event(nil), b.events[int(after):end]...)
-	page.AfterSeq = int64(end)
+	page.Entries = entries[int(after):end]
+	page.Cursor = int64(end)
 	return page, nil
 }
 
@@ -86,10 +89,10 @@ func TestDSHJournalLiveReplayAndReplicaSwitchKeepIdenticalCursors(t *testing.T) 
 	if cursor != replayCursor || !reflect.DeepEqual(live, replay) {
 		t.Fatalf("replica replay changed journal: live=%+v replay=%+v", live, replay)
 	}
-	if cursor != 7 {
+	if cursor != 8 {
 		t.Fatalf("lost tool/terminal events: cursor=%d", cursor)
 	}
-	if live[1].Data.(map[string]any)["source"].(map[string]any)["rpcId"] != "prompt-rpc-1" {
+	if live[2].Data.(map[string]any)["source"].(map[string]any)["rpcId"] != "prompt-rpc-1" {
 		t.Fatal("durable prompt did not acknowledge client submission")
 	}
 	reason := replay[len(replay)-1].Data.(map[string]any)["reason"].(map[string]any)
@@ -148,23 +151,35 @@ func TestDSHJournalReadFailureDoesNotInstallEmptyHistory(t *testing.T) {
 	}
 	b.readError = nil
 	state, err := g.state(t.Context(), "user-token", projectorSessionID)
-	if err != nil || state.lastSeq() != 1 {
+	if err != nil || state.lastSeq() != 2 {
 		t.Fatalf("retry did not restore prompt: %v", err)
 	}
 }
 
 func TestDSHJournalRejectsGapsAndCrossSessionPagesBeforeMutation(t *testing.T) {
 	b := journalBackend()
-	page, _ := b.GetJournal(t.Context(), "user-token", projectorWorkspaceID, projectorSessionID, "", 0)
-	page.Events = []runevent.Event{backendRunEvent(t, 2, runevent.KindRunCompleted, `{}`)}
-	page.AfterSeq = 2
-	if err := validateDSHJournalPage(page, projectorWorkspaceID, projectorSessionID, "", 0); err == nil {
+	page, _ := b.GetJournal(t.Context(), "user-token", projectorWorkspaceID, projectorSessionID, 0)
+	page.Entries[0].Seq = 2
+	if err := validateDSHJournalPage(page, projectorWorkspaceID, projectorSessionID, 0); err == nil {
 		t.Fatal("accepted skipped event")
 	}
-	page.Events = nil
-	page.AfterSeq = 0
+	page.Entries = nil
+	page.Cursor = 0
 	page.Session.SessionID = "other"
-	if err := validateDSHJournalPage(page, projectorWorkspaceID, projectorSessionID, "", 0); err == nil {
+	if err := validateDSHJournalPage(page, projectorWorkspaceID, projectorSessionID, 0); err == nil {
 		t.Fatal("accepted another session")
+	}
+}
+
+func TestDSHJournalRejectsCanonicalGapAcrossPages(t *testing.T) {
+	b := journalBackend()
+	b.events = []runevent.Event{backendRunEvent(t, 2, runevent.KindRunCompleted, `{}`)}
+	g := journalGateway(t, b)
+	state := g.installSession(b.sessions[0])
+	if err := g.refreshJournal(t.Context(), "user-token", state); err == nil {
+		t.Fatal("accepted missing canonical event")
+	}
+	if state.lastSeq() != 2 {
+		t.Fatal("invalid page mutated history")
 	}
 }

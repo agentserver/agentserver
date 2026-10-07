@@ -1240,11 +1240,13 @@
       },
       "UserSessionState": {
         "type": "object", "additionalProperties": false,
-        "required": ["sessionId", "workspaceId", "title", "status", "version", "permissionMode", "permissionModeVersion", "workingDirectory", "workingDirectoryVersion", "createdAt", "updatedAt"],
+        "required": ["sessionId", "workspaceId", "title", "titleSource", "titleVersion", "status", "version", "permissionMode", "permissionModeVersion", "workingDirectory", "workingDirectoryVersion", "createdAt", "updatedAt"],
         "properties": {
           "sessionId": {"$ref": "#/components/schemas/UUID"},
           "workspaceId": {"$ref": "#/components/schemas/UUID"},
           "title": {"type": "string", "minLength": 1, "maxLength": 256},
+          "titleSource": {"enum": ["placeholder", "manual", "fallback", "generated"]},
+          "titleVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "status": {"enum": ["active", "archived"]},
           "activeRunId": {"$ref": "#/components/schemas/UUID"},
           "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},

@@ -2,6 +2,13 @@
 
 ## Production model routing correction
 
+Deployed to SG on 2026-10-08 (Asia/Shanghai), Helm revision 164, chart
+`0.1.0-config.db2bed61abd65`, source `3924c852`, successful publication run
+`37652587873`. Native Linux production-model discovery and cold-resume probes
+passed. The preceding run `37651083454` lost its runner to node disk pressure;
+the retry completed on a healthy node. Runtime image, sandbox policy and
+database schema remain unchanged.
+
 The initial upgrade probes used synthetic model metadata and missed that stock
 `gpt-5.6-sol` now selects `code_mode_only` and Responses Lite independently of
 the disabled feature flags. Without code-mode-host this hides the executor

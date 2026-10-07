@@ -1,11 +1,11 @@
-# Kubernetes Agent Sandbox provider (implementation in progress)
+# Kubernetes Agent Sandbox provider
 
-This module is **not yet a deployable replacement for TAE**. No production
-AgentServer release has been switched. SG controller/CRDs, namespace, quota
-and runtime TLS were installed through targeted Pulumi updates on 2026-10-07.
-Lifecycle, runtime, gateway entry point,
-Core/Gateway credential dispatch, production Chart and independent image
-publication are implemented; SG runtime qualification and rollout remain.
+SG production has been switched to the Kubernetes backend through targeted
+Pulumi updates. Controller/CRDs, namespace, quota, TLS, environment registration
+and SG workspace defaults are installed. All four current nodes passed real
+amd64 runtime/CLI isolation tests. **User-session end-to-end acceptance remains
+in progress**: the first real request exposed an API-server egress issue, now
+fixed with a precise Cilium rule. See [OPERATIONS.md](OPERATIONS.md).
 
 ## Implemented
 
@@ -66,15 +66,16 @@ separate storage lifecycle, and must not lose PVCs when an idle claim expires.
 Do not advertise general session working-directory support until real per-process
 filesystem access enforcement is implemented and tested on the chosen runtime.
 
-## Remaining before activation
+## Rollout and acceptance
 
-1. Apply the provider-specific launch/profile catalog, audited SG workspace
-   setting migration, and Pulumi controller/TLS wiring. The internal
+1. The provider-specific catalog, audited SG workspace migration and
+   Pulumi controller/TLS wiring are deployed. The internal
    `taePsm`/`providerPsm` legacy field names currently carry an explicit provider
    scope for `k8s`; production uses `AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE`, never
    a fake TAE PSM. Scope/operation/provider identity still must match in Core.
-2. Resolve SG's default seccomp namespace restriction, then exercise real
-   bkectl/Lark. The runtime probe refuses uncontained startup. A 2026-10-07
+2. SG's namespace/mount restrictions were resolved with the explicitly
+   approved named profiles. The runtime probe refuses uncontained startup.
+   The initial 2026-10-07
    non-root, capability-free probe on `n251-224-152` failed with bubblewrap's
    "No permissions to create a new namespace". A read-only diagnostic found
    `kernel.unprivileged_userns_clone=1`, `user.max_user_namespaces=1031465`
@@ -84,12 +85,14 @@ filesystem access enforcement is implemented and tested on the chosen runtime.
    with Unconfined AppArmor only for that bounded installer. Runtime Pods remain
    non-root, drop all capabilities and use named Localhost profiles. The
    dedicated profile omits ptrace/process_vm/chroot and keeps default-deny.
-   It must be verified on one SG node before labeling any node eligible.
-3. Publish images and complete Pulumi/Helm assembly, including controller,
-   namespace, quota, admission constraints, TLS and egress configuration.
-4. SG canary: list environments through the real executor, run bkectl/Lark with
-   workspace credentials, exercise filesystem read/write policy and streaming,
-   cancel, disconnect, restart and deletion recovery. Then switch defaults.
+   All four SG nodes subsequently passed the live suite before eligibility
+   labels were installed. No runtime Pod is privileged or unconfined.
+3. Images and Chart are published and workloads Ready. The gateway image also
+   includes its TCP health helper. Cilium requires `toEntities: kube-apiserver`
+   on 443/6443 for the gateway; the tested rule does not cover runtime Pods.
+4. Finish authenticated user-session acceptance: environment enumeration and
+   CLI execution through Core/executor/gateway/runtime. Native tests are not
+   a substitute for that full product path.
 
 No `active-k8s` state string or TAE revision placeholder is introduced: provider
 selection and the existing rollout stage must be separate configuration axes.
@@ -133,10 +136,11 @@ listing, operation transitions and generation fences; they do not prove runtime
 process execution or live SG networking.
 
 Linux runtime live tests (`AGENTSERVER_K8S_RUNTIME_LIVE_BWRAP`, `TestLinuxLive*`)
-passed locally inside a Linux/arm64 container running UID/GID 10000, all
-capabilities dropped and no-new-privileges. They prove read/write projection,
-secret-FD launch, invisible runtime credentials and detached-child cleanup in
-that environment, **not** Linux/amd64 SG acceptance.
+passed first on local Linux/arm64 and then on all four SG Linux/amd64 nodes,
+running UID/GID 10000 with capabilities dropped and no-new-privileges. The SG
+suite proved read/write projection, secret-FD launch, an actually mounted TLS
+key hidden from commands, detached-child cleanup, CLI version commands and
+Lark's embedded skill-reference reader. It does not exercise user OAuth.
 
 The existing Lark PostgreSQL fixture's duplicate event record was corrected
 (`seed+220` was used twice). TAE/Lark and Kubernetes ByteCloud process credential

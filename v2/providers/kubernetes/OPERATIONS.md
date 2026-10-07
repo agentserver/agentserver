@@ -53,6 +53,13 @@ credential in the diagnostic requests. Network policy permits the exact proxy
 Pod selector/port, not all private networks. Command inputs cannot override the
 deployment-owned proxy variables.
 
+SG Cilium excludes node identities from ordinary CIDR matching. The gateway's
+API-server IP/port `ipBlock` alone timed out, even after adding the Service IP.
+An identical-SA diagnostic returned HTTP 200 only after allowing the precise
+`kube-apiserver` entity on TCP 443/6443. The production Chart now owns that rule;
+remove any temporary Pulumi release-bridge rule only after Chart convergence.
+It must select only `sandbox-gateway-k8s`, never the runtime namespace or all Pods.
+
 Use `.github/workflows/v2-kubernetes.yml`. Full publication builds the services,
 harness overlay, runtime, gateway and installer. A `[k8s chart]` commit or the
 `chart_only` input explicitly reuses `kubernetes-published-images.json`.

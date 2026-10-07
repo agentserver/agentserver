@@ -1,5 +1,5 @@
 name: Publish v2 Kubernetes Sandbox Artifacts
-# DSH assets are built from the pinned source submodule, never committed.
+# Public DSH compilation is isolated from the SG-only image publisher.
 
 on:
   workflow_dispatch:

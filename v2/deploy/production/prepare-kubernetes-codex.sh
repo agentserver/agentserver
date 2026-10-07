@@ -19,5 +19,7 @@ for executable in codex bwrap; do
   curl --fail --location --retry 3 "$url" --output "$download_directory/$executable.tar.gz"
   tar -xzf "$download_directory/$executable.tar.gz" -C "$download_directory"
   install -m 0555 "$download_directory/$executable-x86_64-unknown-linux-musl" "$runtime_directory/bundle/$destination"
+  rm -- "$download_directory/$executable.tar.gz" "$download_directory/$executable-x86_64-unknown-linux-musl"
 done
+rmdir "$download_directory"
 install -m 0444 "$manifest" "$runtime_directory/runtime-manifest.json"

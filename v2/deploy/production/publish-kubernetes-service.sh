@@ -15,12 +15,6 @@ export GOTOOLCHAIN=go1.26.5 CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 for binary in agentserver-core agentserver-probe platform-gateway browser-gateway executor-gateway egress-authorizer llmproxy; do
   go -C "$v2_root" build -trimpath -ldflags='-s -w' -o "$RELEASE_DIRECTORY/service/bin/$binary" "./cmd/$binary"
 done
-image="ghcr.io/agentserver/v2-service:k8s-service-$GITHUB_SHA"
-docker buildx build --platform linux/amd64 --load --build-arg "SOURCE_REVISION=$GITHUB_SHA" \
-  -t "$image" -f "$v2_root/deploy/production/kubernetes-service.Containerfile" "$RELEASE_DIRECTORY/service"
-docker push "$image"
-docker inspect --format '{{index .RepoDigests 0}}' "$image" >"$RELEASE_DIRECTORY/service.image"
-
 if [ "${PUBLISH_HARNESS:-false}" = true ]; then
   mkdir -p "$RELEASE_DIRECTORY/harness/bin"
   if [ -n "${CODEX_RUNTIME_DIRECTORY:-}" ]; then
@@ -34,6 +28,20 @@ if [ "${PUBLISH_HARNESS:-false}" = true ]; then
     if [ "$binary" = harness-init ]; then destination=agentserver-init; fi
     go -C "$v2_root" build -trimpath -ldflags='-s -w' -o "$RELEASE_DIRECTORY/harness/bin/$destination" "./cmd/$binary"
   done
+fi
+
+# SG runners use disposable disks. Finish all compilation, then release this
+# job's cache before pulling/building images; do not prune shared node storage.
+if [ "${CLEAN_BUILD_CACHE:-false}" = true ]; then
+  go -C "$v2_root" clean -cache
+fi
+image="ghcr.io/agentserver/v2-service:k8s-service-$GITHUB_SHA"
+docker buildx build --platform linux/amd64 --load --build-arg "SOURCE_REVISION=$GITHUB_SHA" \
+  -t "$image" -f "$v2_root/deploy/production/kubernetes-service.Containerfile" "$RELEASE_DIRECTORY/service"
+docker push "$image"
+docker inspect --format '{{index .RepoDigests 0}}' "$image" >"$RELEASE_DIRECTORY/service.image"
+
+if [ "${PUBLISH_HARNESS:-false}" = true ]; then
   harness_image="ghcr.io/agentserver/v2-harness:k8s-harness-$GITHUB_SHA"
   docker buildx build --platform linux/amd64 --load \
     --build-arg "SOURCE_REVISION=$GITHUB_SHA" --build-arg "HARNESS_BASE=$harness_base" \

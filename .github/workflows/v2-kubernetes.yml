@@ -6,7 +6,7 @@ on:
       chart_only:
         type: boolean
         default: false
-        description: Reuse the explicitly recorded published image set and publish only the chart
+        description: Reuse published images for a configuration or network-policy-only chart release
   push:
     branches: [feat/botmux-native-oauth]
     paths: [".github/workflows/v2-kubernetes.yml"]

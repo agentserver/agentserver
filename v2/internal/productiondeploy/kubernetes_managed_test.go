@@ -45,6 +45,7 @@ func kubernetesConfigDocument() ConfigDocument {
 	d.Managed.Environment.Root.Description = "Default container runtime; managed workspace"
 	d.Managed.Kubernetes = &KubernetesSandboxDocument{Namespace: "agentserver-sandboxes", Pool: "managed-cli-v1", Scope: "sg-managed-cli", GatewayImage: "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-k8s-gateway:canary", RuntimeTLSSecret: "agentserver-runtime-tls", RuntimeServerName: "sandbox-runtime.agentserver.internal", APIEgress: []EgressRuleDocument{{CIDR: "10.251.224.152/32", Ports: []uint16{6443}}}, RuntimeExternalEgress: []EgressRuleDocument{}}
 	d.Managed.Kubernetes.BubblewrapProfile = true
+	d.Managed.Kubernetes.APIServerEntityPolicy = true
 	d.Managed.Kubernetes.RuntimeProxyURL = kubernetesRuntimeProxyURL(d.ClusterDomain)
 	d.SandboxRegions = ManagedSandboxRegionsDocument{DefaultRegion: "sg", Regions: []string{"sg"}}
 	d.ProxyProfiles = []ManagedSandboxProxyProfileDocument{}
@@ -121,6 +122,16 @@ func TestKubernetesChartRendersExecutableGraphWithoutTAE(t *testing.T) {
 	rawPolicy, _ := json.Marshal(policy)
 	if !strings.Contains(string(rawPolicy), "ssh-egress-merlin-i18nbd-syd2a-83092") {
 		t.Fatal("runtime proxy has no narrow egress rule")
+	}
+	apiPolicy := findResource(t, foundation, "CiliumNetworkPolicy", "sandbox-gateway-k8s-apiserver")
+	apiSpec := objectField(t, apiPolicy, "spec")
+	selector := objectField(t, objectField(t, apiSpec, "endpointSelector"), "matchLabels")
+	if selector["app.kubernetes.io/name"] != "sandbox-gateway-k8s" {
+		t.Fatal("API egress must not cover runtime Pods")
+	}
+	apiRaw, _ := json.Marshal(apiPolicy)
+	if !strings.Contains(string(apiRaw), `"toEntities":["kube-apiserver"]`) {
+		t.Fatal("missing precise API server entity egress")
 	}
 	for _, name := range []string{helmRuntimeManifestFile, helmFoundationManifestFile} {
 		data, _ := chart.File(name)

@@ -25,6 +25,7 @@ type KubernetesSandboxDocument struct {
 	RuntimeClassName      string               `json:"runtimeClassName,omitempty"`
 	BubblewrapProfile     bool                 `json:"bubblewrapProfile,omitempty"`
 	RuntimeProxyURL       string               `json:"runtimeProxyUrl,omitempty"`
+	APIServerEntityPolicy bool                 `json:"apiServerEntityPolicy,omitempty"`
 	APIEgress             []EgressRuleDocument `json:"apiEgress"`
 	RuntimeExternalEgress []EgressRuleDocument `json:"runtimeExternalEgress"`
 }
@@ -190,6 +191,12 @@ func renderKubernetesWorkloadResources(c renderContext) ([]kubeObject, error) {
 	items := make([]kubeObject, 0, len(objects)+1)
 	for _, obj := range objects {
 		items = append(items, kubeObject(obj))
+	}
+	if k.APIServerEntityPolicy {
+		// On SG's Cilium, node/API-server identities do not match ordinary
+		// ipBlock rules. This admits only the gateway to the API-server entity,
+		// never all cluster/private addresses or runtime Pods.
+		items = append(items, kubeObject{"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy", "metadata": kubeObject{"name": "sandbox-gateway-k8s-apiserver", "namespace": d.Namespace}, "spec": kubeObject{"endpointSelector": kubeObject{"matchLabels": kubeObject{"app.kubernetes.io/name": "sandbox-gateway-k8s", "app.kubernetes.io/part-of": "agentserver-v2"}}, "egress": []any{kubeObject{"toEntities": []any{"kube-apiserver"}, "toPorts": []any{kubeObject{"ports": []any{kubeObject{"port": "443", "protocol": "TCP"}, kubeObject{"port": "6443", "protocol": "TCP"}}}}}}}})
 	}
 	egress := append(publicHTTPSEgress(), externalEgress(k.RuntimeExternalEgress)...)
 	if k.RuntimeProxyURL != "" {

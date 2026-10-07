@@ -38,10 +38,11 @@ func PrepareKubernetesRelease(base LoadedConfig, release KubernetesRelease) (Loa
 	d.Managed.Environment.EnvironmentID = release.EnvironmentID
 	d.Managed.Environment.Root = ManagedEnvironmentRootDocument{Path: "/workspace", DefaultCWD: ".", DisplayName: "SG · Kubernetes", Description: "Session-isolated managed CLI sandbox; ephemeral workspace"}
 	d.Managed.Kubernetes = &KubernetesSandboxDocument{
-		BubblewrapProfile: true,
-		RuntimeProxyURL:   kubernetesRuntimeProxyURL(d.ClusterDomain),
-		AllWorkspaces:     release.AllWorkspaces,
-		Namespace:         "agentserver-sandboxes", Pool: "managed-cli-v1", Scope: "sg-managed-cli",
+		BubblewrapProfile:     true,
+		APIServerEntityPolicy: true,
+		RuntimeProxyURL:       kubernetesRuntimeProxyURL(d.ClusterDomain),
+		AllWorkspaces:         release.AllWorkspaces,
+		Namespace:             "agentserver-sandboxes", Pool: "managed-cli-v1", Scope: "sg-managed-cli",
 		GatewayImage: release.GatewayImage, RuntimeTLSSecret: "agentserver-runtime-tls", RuntimeServerName: "sandbox-runtime.agentserver.internal",
 		APIEgress: []EgressRuleDocument{{CIDR: api.String(), Ports: []uint16{6443}}}, RuntimeExternalEgress: []EgressRuleDocument{},
 	}

@@ -22,6 +22,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  frontend:
+    if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
+    uses: ./.github/workflows/dsh-frontend.yml
   gateway-probe-repair:
     if: ${{ contains(github.event.head_commit.message, '[k8s gateway]') }}
     runs-on: k8s-sg
@@ -74,8 +77,8 @@ jobs:
             --file v2/deploy/production/security/profile-installer.Containerfile \
             v2/deploy/production/security
   publish:
-    needs: gateway-probe-repair
-    if: ${{ always() && (needs.gateway-probe-repair.result == 'success' || needs.gateway-probe-repair.result == 'skipped') }}
+    needs: [gateway-probe-repair, frontend]
+    if: ${{ !cancelled() && (needs.gateway-probe-repair.result == 'success' || needs.gateway-probe-repair.result == 'skipped') && (needs.frontend.result == 'success' || needs.frontend.result == 'skipped') }}
     runs-on: k8s-sg
     timeout-minutes: 60
     env:
@@ -91,13 +94,12 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: Build pinned DSH frontend from source
+      - name: Download frontend built from pinned DSH source
         if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential rsync
-          git submodule update --init third_party/deepseek-harness
-          bash v2/dsh-web/build.sh
+        uses: actions/download-artifact@v4
+        with:
+          name: dsh-frontend
+          path: v2/dsh-web/dist
       - name: Require built DSH artifacts for release tests
         if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
         run: echo 'AGENTSERVER_REQUIRE_DSH_ASSETS=1' >>"$GITHUB_ENV"

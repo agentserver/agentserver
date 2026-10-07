@@ -32,7 +32,9 @@ resource map; it does not rewrite frontend sorting, models, or session logic.
 
 `dist/` is ignored except for its empty-directory marker. Generated HTML, JS,
 CSS, fonts and maps must not be committed. CI builds the assets before compiling
-service binaries. A source-only checkout can run backend tests; asset regressions
+service binaries: `.github/workflows/dsh-frontend.yml` uses a separate hosted
+runner, then the SG publisher downloads its Actions artifact and pushes the
+service image directly to GHCR. No ICM build or push is involved. A source-only checkout can run backend tests; asset regressions
 are explicitly skipped unless `AGENTSERVER_REQUIRE_DSH_ASSETS=1`. Production DSH
 startup refuses an unbuilt bundle instead of serving a placeholder application.
 

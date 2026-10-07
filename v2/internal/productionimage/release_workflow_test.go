@@ -33,8 +33,6 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 	skillDigest := sha256.Sum256(skill)
 	for _, required := range []string{
 		"MANAGED_SANDBOX_REPOSITORY: ghcr.io/agentserver/v2-managed-sandbox",
-		"TAE_MANAGED_SANDBOX_CN_REPOSITORY: hub.byted.org/agentserver/tae-sandbox",
-		"TAE_MANAGED_SANDBOX_SG_REPOSITORY: aliyun-sin-hub.byted.org/agentserver/tae-sandbox",
 		"LARK_CLI_SHA256: " + ManagedLarkCLISHA256,
 		"LARK_SKILL_SHA256: " + hex.EncodeToString(skillDigest[:]),
 		"MANAGED_SKILL_SHA256: " + ManagedSkillSHA256,
@@ -67,6 +65,7 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		"ICM_USERNAME", "ICM_PASSWORD", "hub.byted.org", "tae_repository",
 		"TAE_MANAGED_SANDBOX_VA_REPOSITORY",
 		"aliyun-va-hub.byted.org",
 		"--retry-delay",
@@ -89,6 +88,38 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 	}
 	if strings.Contains(string(managedContainerfile), "FROM aliyun-sin-hub.byted.org/faas/bytedance.sandbox.terminal_faas") {
 		t.Fatal("managed sandbox Containerfile must not inherit the official terminal_faas image")
+	}
+}
+
+func TestKubernetesPublicationBuildsSourceAndPushesDirectlyToGHCR(t *testing.T) {
+	_, source, _, _ := runtime.Caller(0)
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", ".."))
+	paths := []string{".github/workflows/v2-kubernetes.yml", "v2/deploy/production/publish-kubernetes-images.sh", "v2/deploy/production/publish-kubernetes-service.sh"}
+	for _, name := range paths {
+		raw, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"ICM_USERNAME", "ICM_PASSWORD", "hub.byted.org"} {
+			if strings.Contains(string(raw), forbidden) {
+				t.Fatalf("%s uses obsolete ICM publish path %s", name, forbidden)
+			}
+		}
+		if !strings.Contains(string(raw), "ghcr.io/agentserver") {
+			t.Fatalf("%s missing GHCR destination", name)
+		}
+	}
+	workflow, _ := os.ReadFile(filepath.Join(root, ".github/workflows/dsh-frontend.yml"))
+	for _, required := range []string{"git submodule update --init third_party/deepseek-harness", "bash v2/dsh-web/build.sh"} {
+		if !strings.Contains(string(workflow), required) {
+			t.Fatalf("source build step missing: %s", required)
+		}
+	}
+	publisher, _ := os.ReadFile(filepath.Join(root, paths[0]))
+	for _, required := range []string{"uses: ./.github/workflows/dsh-frontend.yml", "name: dsh-frontend", "path: v2/dsh-web/dist"} {
+		if !strings.Contains(string(publisher), required) {
+			t.Fatalf("frontend artifact handoff missing: %s", required)
+		}
 	}
 }
 

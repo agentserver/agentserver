@@ -1,0 +1,31 @@
+name: Build pinned DSH frontend
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # The complete upstream TS build exceeds the SG publisher's 4 GiB budget.
+    # Only public source and generated static assets enter this build job.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Initialize pinned frontend source
+        run: git submodule update --init third_party/deepseek-harness
+      - name: Build official frontend with deployment configuration
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential rsync
+          bash v2/dsh-web/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsh-frontend
+          path: v2/dsh-web/dist/
+          if-no-files-found: error

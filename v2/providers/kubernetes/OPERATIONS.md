@@ -65,6 +65,9 @@ harness overlay, runtime, gateway and installer. A `[k8s chart]` commit or the
 `chart_only` input explicitly reuses `kubernetes-published-images.json`.
 A `[k8s service]` commit rebuilds only the service image, retaining the qualified
 harness, runtime, gateway and node-profile installer references.
+GitHub Actions builds these images and pushes directly to `ghcr.io/agentserver`;
+there is no ICM build, login or mirror-publication step. SG's deployment registry
+mirror is only a pull path for GHCR images, not a second build service.
 Do not confuse published images/Chart with an activated production deployment.
 The gateway image must contain `/usr/local/bin/agentserver-probe`, used by the
 unchanged startup/readiness/liveness TCP probes.

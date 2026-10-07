@@ -16,6 +16,8 @@ func TestPlatformBundleServesClosedProductRoutesAndHashedAssets(t *testing.T) {
 		"/workspaces/9271bfe5-68a4-484b-a2d3-e9f450a42d0c/members",
 		"/workspaces/9271bfe5-68a4-484b-a2d3-e9f450a42d0c/executors",
 		"/workspaces/9271bfe5-68a4-484b-a2d3-e9f450a42d0c/gateways",
+		"/workspaces/9271bfe5-68a4-484b-a2d3-e9f450a42d0c/credentials",
+		"/workspaces/9271bfe5-68a4-484b-a2d3-e9f450a42d0c/credentials/",
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://agent.example"+route, nil))

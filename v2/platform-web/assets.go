@@ -95,7 +95,7 @@ func isPlatformProductRoute(raw string) bool {
 	if len(parts) < 2 || len(parts) > 3 || parts[0] != "workspaces" || !canonicalUUID(parts[1]) {
 		return false
 	}
-	return len(parts) == 2 || parts[2] == "overview" || parts[2] == "members" || parts[2] == "executors" || parts[2] == "gateways"
+	return len(parts) == 2 || parts[2] == "overview" || parts[2] == "members" || parts[2] == "executors" || parts[2] == "gateways" || parts[2] == "credentials"
 }
 
 func canonicalUUID(value string) bool {

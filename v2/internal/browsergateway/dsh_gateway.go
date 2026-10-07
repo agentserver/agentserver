@@ -57,6 +57,7 @@ type DSHSessionBackend interface {
 	UpdatePermissionMode(context.Context, string, string, string, corecontract.UpdateUserSessionPermissionModeRequest) (corecontract.UpdateUserSessionPermissionModeResponse, error)
 	UpdateWorkingDirectory(context.Context, string, string, string, corecontract.UpdateUserSessionWorkingDirectoryRequest) (corecontract.UpdateUserSessionWorkingDirectoryResponse, error)
 	GetTranscript(context.Context, string, string, string) (corecontract.GetUserSessionTranscriptResponse, error)
+	GetJournal(context.Context, string, string, string, string, int64) (corecontract.UserSessionJournalPage, error)
 	StartRun(context.Context, StartRunRequest) (StartRunResult, error)
 	ReadRunEvents(context.Context, ReadRunEventsRequest) (ReadRunEventsResult, error)
 	CancelRun(context.Context, CancelRunRequest) (CancelRunResult, error)
@@ -82,6 +83,10 @@ type DSHGateway struct {
 }
 
 type dshSessionState struct {
+	journalMu         sync.Mutex
+	journalRunID      string
+	journalSeq        int64
+	journalApprovals  map[string]runevent.Event
 	mu                sync.Mutex
 	session           corecontract.UserSessionState
 	events            []dshEvent
@@ -92,7 +97,6 @@ type dshSessionState struct {
 	runCancel         context.CancelFunc
 	builders          map[string]*dshAssistantBuilder
 	tools             map[string]*dshToolBuilder
-	loaded            bool
 	pending           []dshPendingPrompt
 }
 
@@ -608,7 +612,6 @@ func (gateway *DSHGateway) prompt(ctx context.Context, bearer string, args map[s
 	activeRunID := state.session.ActiveRunID
 	state.mu.Unlock()
 	if activeRunID != "" {
-		state.appendSyntheticUser(prompt.String(), request.RequestID)
 		state.mu.Lock()
 		state.pending = append(state.pending, dshPendingPrompt{Bearer: bearer, RequestID: request.RequestID, Text: prompt.String()})
 		runID := state.session.ActiveRunID
@@ -627,7 +630,6 @@ func (gateway *DSHGateway) prompt(ctx context.Context, bearer string, args map[s
 	if err != nil {
 		return gateway.dshError(err)
 	}
-	state.appendSyntheticUser(prompt.String(), request.RequestID)
 	state.mu.Lock()
 	state.session.ActiveRunID = result.RunID
 	state.mu.Unlock()
@@ -672,9 +674,8 @@ func (gateway *DSHGateway) executeCommand(ctx context.Context, bearer string, ar
 		return gateway.dshError(err)
 	}
 	gateway.installSession(result.Session)
-	state.mu.Lock()
-	state.appendLocked("permission/preset", time.Now().UnixMilli(), map[string]any{"preset": mode})
-	state.mu.Unlock()
+	// The control projection carries current permissions. Do not invent a
+	// process-local journal entry that cannot be replayed on another replica.
 	return map[string]any{"commandId": uuid.New().String(), "result": map[string]any{"kind": "success", "text": "permission " + mode}}, true, "", "", nil
 }
 
@@ -706,8 +707,17 @@ func (gateway *DSHGateway) publishApproval(event runevent.Event, bearer string) 
 		return
 	}
 	approval := decoded.(runevent.ApprovalPayload)
+	if !approval.ExpiresAt.After(time.Now()) {
+		return
+	}
 	eventID := uuid.New().String()
 	gateway.approvalMu.Lock()
+	for _, pending := range gateway.approvals {
+		if pending.ApprovalID == approval.ApprovalID {
+			gateway.approvalMu.Unlock()
+			return
+		}
+	}
 	gateway.approvals[eventID] = dshPendingApproval{
 		Bearer: bearer, WorkspaceID: event.WorkspaceID, ApprovalID: approval.ApprovalID,
 		Nonce: approval.Nonce, Version: approval.Version,
@@ -898,37 +908,14 @@ func (gateway *DSHGateway) installSession(session corecontract.UserSessionState)
 }
 
 func (gateway *DSHGateway) state(ctx context.Context, bearer, id string) (*dshSessionState, error) {
-	gateway.mu.Lock()
-	if state := gateway.sessions[id]; state != nil {
-		gateway.mu.Unlock()
-		state.mu.Lock()
-		loaded := state.loaded
-		state.mu.Unlock()
-		if !loaded {
-			transcript, err := gateway.backend.GetTranscript(ctx, bearer, gateway.config.WorkspaceID, id)
-			if err == nil {
-				state.loadTranscript(transcript)
-			}
-			state.mu.Lock()
-			state.loaded = true
-			state.mu.Unlock()
-		}
-		return state, nil
-	}
-	gateway.mu.Unlock()
+	// Cache residency never grants authority after membership changes.
 	session, err := gateway.backend.GetSession(ctx, bearer, gateway.config.WorkspaceID, id)
 	if err != nil {
 		return nil, err
 	}
 	state := gateway.installSession(session)
-	transcript, err := gateway.backend.GetTranscript(ctx, bearer, gateway.config.WorkspaceID, id)
-	if err == nil {
-		state.loadTranscript(transcript)
-	}
-	state.mu.Lock()
-	state.loaded = true
-	state.mu.Unlock()
-	return state, nil
+	err = gateway.refreshJournal(ctx, bearer, state)
+	return state, err
 }
 
 func (gateway *DSHGateway) startRunPoller(state *dshSessionState, bearer string, started StartRunResult) {
@@ -941,47 +928,38 @@ func (gateway *DSHGateway) startRunPoller(state *dshSessionState, bearer string,
 	sessionID := state.session.SessionID
 	state.mu.Unlock()
 	go func() {
-		cursor := started.Cursor
 		errorsSeen := 0
 		defer cancel()
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
 		for {
-			batch, err := gateway.backend.ReadRunEvents(ctx, ReadRunEventsRequest{BearerToken: bearer, WorkspaceID: gateway.config.WorkspaceID, SessionID: sessionID, RunID: started.RunID, After: cursor, Limit: 128, Wait: 10 * time.Second})
+			err := gateway.refreshJournal(ctx, bearer, state)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
 				errorsSeen++
 				if errorsSeen >= 3 {
-					state.mu.Lock()
-					state.session.ActiveRunID = ""
-					state.mu.Unlock()
 					gateway.emitRemoteEvent("api-session/error", sessionID, err.Error())
-					gateway.emitRemoteEvent("api-session/status", sessionID, false)
 					return
 				}
-				time.Sleep(250 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
 				continue
 			}
 			errorsSeen = 0
-			for i, event := range batch.Events {
-				state.mapCanonical(event)
-				if event.Kind == runevent.KindApprovalRequested {
-					gateway.publishApproval(event, bearer)
-				}
-				if event.Kind == runevent.KindApprovalApproved || event.Kind == runevent.KindApprovalDenied || event.Kind == runevent.KindApprovalExpired || event.Kind == runevent.KindApprovalCancelled || event.Kind == runevent.KindApprovalConsumed {
-					gateway.cancelApproval(event)
-				}
-				if i < len(batch.EventCursors) {
-					cursor = batch.EventCursors[i]
-				}
-			}
-			if len(batch.Events) == 0 {
-				continue
-			}
 			if state.terminal() {
 				gateway.emitRemoteEvent("api-session/status", sessionID, false)
 				gateway.startNextPending(state)
 				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
 			}
 		}
 	}()

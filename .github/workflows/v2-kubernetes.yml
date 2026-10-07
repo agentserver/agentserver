@@ -55,7 +55,7 @@ jobs:
           done
           printf 'image=%s\n' "$(docker inspect --format '{{index .RepoDigests 0}}' "$image")" >>"$GITHUB_OUTPUT"
   node-profile-installer:
-    if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
+    if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && !contains(github.event.head_commit.message, '[k8s service]') }}
     runs-on: k8s-sg
     timeout-minutes: 15
     steps:
@@ -129,11 +129,16 @@ jobs:
           name: agentserver-v2-production-53e4f7f19848601fc6098579574c26ef1dd93594
           path: ${{ runner.temp }}/kubernetes-base
       - name: Build and publish Kubernetes services and profile installer
-        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
+        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && !contains(github.event.head_commit.message, '[k8s service]') }}
         env:
           RELEASE_TAG: k8s-${{ github.sha }}
           RELEASE_DIRECTORY: ${{ runner.temp }}/kubernetes-release
         run: bash v2/deploy/production/publish-kubernetes-images.sh
+      - name: Publish service-only repair with qualified sandbox images unchanged
+        if: ${{ contains(github.event.head_commit.message, '[k8s service]') }}
+        env:
+          RELEASE_DIRECTORY: ${{ runner.temp }}/kubernetes-release
+        run: bash v2/deploy/production/publish-kubernetes-service.sh
       - name: Reuse published images without rebuilding application binaries
         if: ${{ inputs.chart_only || contains(github.event.head_commit.message, '[k8s chart]') }}
         env:

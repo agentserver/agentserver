@@ -63,6 +63,8 @@ It must select only `sandbox-gateway-k8s`, never the runtime namespace or all Po
 Use `.github/workflows/v2-kubernetes.yml`. Full publication builds the services,
 harness overlay, runtime, gateway and installer. A `[k8s chart]` commit or the
 `chart_only` input explicitly reuses `kubernetes-published-images.json`.
+A `[k8s service]` commit rebuilds only the service image, retaining the qualified
+harness, runtime, gateway and node-profile installer references.
 Do not confuse published images/Chart with an activated production deployment.
 The gateway image must contain `/usr/local/bin/agentserver-probe`, used by the
 unchanged startup/readiness/liveness TCP probes.
@@ -79,3 +81,15 @@ authenticated user session to enumerate environments and run the CLI through
 Core → executor → sandbox gateway → runtime. Do not manufacture user tokens or
 use diagnostic `kubectl exec` as evidence for the complete product request path.
 Never relabel historical TAE rows or automatically retry ambiguous commands.
+
+## DSH history and replica changes
+
+DSH followers replay Core's authenticated, paginated session journal, including
+committed user prompts, tool events and failed turns. Live projection and restart
+recovery use the same ordered source; the bounded text transcript is not a cursor
+source. Each connected replica follows new Core commits even if another replica
+handled the prompt. Read failures are surfaced, not cached as empty history.
+The journal uses the existing combined `sessions.transcript` user/workload
+authority and rechecks membership on each page. Missing retained events fail
+explicitly; retention rebases are not silently converted to a different journal.
+No database migration or deletion of existing session history is needed.

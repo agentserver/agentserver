@@ -54,6 +54,15 @@ func (fake *dshFakeBackend) UpdateWorkingDirectory(context.Context, string, stri
 func (fake *dshFakeBackend) GetTranscript(context.Context, string, string, string) (corecontract.GetUserSessionTranscriptResponse, error) {
 	return corecontract.GetUserSessionTranscriptResponse{}, nil
 }
+
+func (fake *dshFakeBackend) GetJournal(_ context.Context, _ string, workspaceID, sessionID, _ string, _ int64) (corecontract.UserSessionJournalPage, error) {
+	state := corecontract.UserSessionState{}
+	if len(fake.sessions) > 0 {
+		state = fake.sessions[0]
+	}
+	state.WorkspaceID, state.SessionID = workspaceID, sessionID
+	return corecontract.UserSessionJournalPage{Session: state, Events: []runevent.Event{}}, nil
+}
 func (fake *dshFakeBackend) StartRun(context.Context, StartRunRequest) (StartRunResult, error) {
 	return StartRunResult{}, nil
 }

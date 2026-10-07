@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
-	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runevent"
@@ -41,38 +40,7 @@ func (state *dshSessionState) terminal() bool {
 	return state.session.ActiveRunID == ""
 }
 
-func (state *dshSessionState) loadTranscript(transcript corecontract.GetUserSessionTranscriptResponse) {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if len(state.events) != 0 {
-		return
-	}
-	turn := 0
-	for _, message := range transcript.Messages {
-		if message.Role == "user" {
-			turn++
-			state.appendLocked("turn/start", message.CreatedAt.UnixMilli(), map[string]any{"turn": turn})
-			state.appendLocked("step/start", message.CreatedAt.UnixMilli(), map[string]any{"turn": turn, "step": 1})
-			state.appendLocked("user/message", message.CreatedAt.UnixMilli(), map[string]any{
-				"role": "user", "content": []any{map[string]any{"type": "text", "text": message.Content}},
-				"source": map[string]any{"kind": "user"}, "id": message.MessageID,
-			})
-			continue
-		}
-		if message.Role == "assistant" {
-			state.appendLocked("assistant/message", message.CreatedAt.UnixMilli(), map[string]any{
-				"turn": turn, "step": 1, "message": map[string]any{
-					"role": "assistant", "content": []any{map[string]any{"type": "text", "text": message.Content}},
-					"source": map[string]any{"kind": "model", "provider": "agentserver", "model": "codex"}, "id": message.MessageID,
-				}, "stream": []any{},
-			})
-			state.appendLocked("step/end", message.CreatedAt.UnixMilli(), map[string]any{"turn": turn, "step": 1})
-			state.appendLocked("turn/end", message.CreatedAt.UnixMilli(), map[string]any{"turn": turn, "reason": map[string]any{"kind": "completed"}})
-		}
-	}
-}
-
-func (state *dshSessionState) appendSyntheticUser(text, requestID string) {
+func (state *dshSessionState) appendJournalPrompt(message corecontract.UserSessionTranscriptMessage) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	turn := 1
@@ -85,12 +53,12 @@ func (state *dshSessionState) appendSyntheticUser(text, requestID string) {
 			}
 		}
 	}
-	now := time.Now().UnixMilli()
+	now := message.CreatedAt.UnixMilli()
 	state.appendLocked("turn/start", now, map[string]any{"turn": turn})
 	state.appendLocked("step/start", now, map[string]any{"turn": turn, "step": 1})
 	state.appendLocked("user/message", now, map[string]any{
-		"role": "user", "content": []any{map[string]any{"type": "text", "text": text}},
-		"source": map[string]any{"kind": "user", "rpcId": requestID}, "id": requestID,
+		"role": "user", "content": []any{map[string]any{"type": "text", "text": message.Content}},
+		"source": map[string]any{"kind": "user"}, "id": message.MessageID,
 	})
 }
 
@@ -220,6 +188,10 @@ func (state *dshSessionState) mapCanonical(event runevent.Event) {
 		if event.Kind != runevent.KindRunCompleted {
 			reason = map[string]any{"kind": "interrupted"}
 		}
+		if event.Kind == runevent.KindRunFailed {
+			failure := payload.(runevent.RunTerminalPayload)
+			reason = map[string]any{"kind": "error", "error": map[string]any{"code": "UNKNOWN", "message": failure.Message}}
+		}
 		state.appendLocked("turn/end", timeMS, map[string]any{"turn": turn, "reason": reason})
 		state.session.ActiveRunID = ""
 	case runevent.KindRunCancelling:
@@ -307,10 +279,12 @@ func (state *dshSessionState) appendLocked(kind string, timeMS int64, data any) 
 	}
 	state.nextSeq++
 	state.events = append(state.events, event)
-	for _, subscriber := range state.subs {
+	for id, subscriber := range state.subs {
 		select {
 		case subscriber <- dshSessionUpdate{event: &event}:
 		default:
+			delete(state.subs, id)
+			close(subscriber)
 		}
 	}
 	return event
@@ -323,10 +297,12 @@ func (state *dshSessionState) emitAssistantFrameLocked(frame map[string]any) {
 	state.assistantRevision++
 	frame["revision"] = state.assistantRevision
 	update := dshSessionUpdate{assistantFrame: frame}
-	for _, subscriber := range state.subs {
+	for id, subscriber := range state.subs {
 		select {
 		case subscriber <- update:
 		default:
+			delete(state.subs, id)
+			close(subscriber)
 		}
 	}
 }

@@ -56,6 +56,7 @@ func (handler *UserSessionHandler) Routes() http.Handler {
 	mux.HandleFunc(corecontract.UserSessionPermissionModeRoutePattern, handler.permissionMode)
 	mux.HandleFunc(corecontract.UserSessionWorkingDirectoryRoutePattern, handler.workingDirectory)
 	mux.HandleFunc(corecontract.UserSessionTranscriptRoutePattern, handler.transcript)
+	mux.HandleFunc(corecontract.UserSessionJournalRoutePattern, handler.journal)
 	mux.HandleFunc(corecontract.UserSessionTrajectoryRoutePattern, handler.trajectory)
 	mux.HandleFunc(corecontract.UserSessionArchiveRoutePattern, handler.archive)
 	return mux

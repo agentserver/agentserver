@@ -184,12 +184,19 @@ func (connection *dshMuxConnection) serveStream(ctx context.Context, message dsh
 		return
 	}
 	for value := range stream {
+		if failure, ok := value.(dshFollowFailure); ok {
+			code, msg, details := connection.gateway.mapError(failure.err)
+			connection.write(dshStreamError(message.StreamID, code, msg, details))
+			return
+		}
 		if !connection.write(dshStreamItem(message.StreamID, value)) {
 			return
 		}
 	}
 	connection.write(dshStreamEnd(message.StreamID))
 }
+
+type dshFollowFailure struct{ err error }
 
 func (connection *dshMuxConnection) cancel(id string) {
 	connection.streamsMu.Lock()
@@ -229,6 +236,17 @@ func (gateway *DSHGateway) openStream(ctx context.Context, bearer string, args m
 		}
 		go func() {
 			defer close(out)
+			followCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			send := func(value any) bool {
+				select {
+				case out <- value:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			}
+			state.journalMu.Lock()
 			updates, stop := state.subscribe(ctx)
 			defer stop()
 			events, header, cursor := state.snapshot()
@@ -245,7 +263,29 @@ func (gateway *DSHGateway) openStream(ctx context.Context, bearer string, args m
 			if request.AssistantStream {
 				snapshot["assistantStream"] = state.assistantBaseline()
 			}
-			out <- snapshot
+			state.journalMu.Unlock()
+			if !send(snapshot) {
+				return
+			}
+			failures := make(chan error, 1)
+			go func() {
+				ticker := time.NewTicker(500 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-followCtx.Done():
+						return
+					case <-ticker.C:
+					}
+					if err := gateway.refreshJournal(followCtx, bearer, state); err != nil {
+						select {
+						case failures <- err:
+						case <-followCtx.Done():
+						}
+						return
+					}
+				}
+			}()
 			assistantRevision := int64(0)
 			if request.AssistantStream {
 				if baseline, ok := snapshot["assistantStream"].(map[string]any); ok {
@@ -256,21 +296,30 @@ func (gateway *DSHGateway) openStream(ctx context.Context, bearer string, args m
 				select {
 				case <-ctx.Done():
 					return
+				case err := <-failures:
+					send(dshFollowFailure{err: err})
+					return
 				case update, ok := <-updates:
 					if !ok {
+						send(dshFollowFailure{err: errors.New("session follower fell behind; reconnect to restore committed history")})
 						return
 					}
 					if update.event != nil {
 						event := *update.event
 						if event.Seq > cursor {
-							out <- eventValue(event)
+							if !send(eventValue(event)) {
+								return
+							}
+							cursor = event.Seq
 						}
 					}
 					if request.AssistantStream && update.assistantFrame != nil {
 						revision := numberField(update.assistantFrame, "revision")
 						if revision > assistantRevision {
 							assistantRevision = revision
-							out <- map[string]any{"type": "assistant-stream", "frame": update.assistantFrame}
+							if !send(map[string]any{"type": "assistant-stream", "frame": update.assistantFrame}) {
+								return
+							}
 						}
 					}
 				}

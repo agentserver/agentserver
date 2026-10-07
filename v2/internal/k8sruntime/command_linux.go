@@ -89,7 +89,10 @@ func sandboxArguments(c Config, r sandboxcontract.RunCommandRequest) ([]string, 
 	}
 	args = append(args, bind, c.Workspace, c.Workspace, "--chdir", r.WorkingDirectory,
 		"--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", "/tmp", "--setenv", "LANG", "C.UTF-8")
-	if c.ProxyURL != "" {
+	// ByteCloud/bkectl needs the internal egress route. Lark's public CDN must
+	// remain direct: routing open.feishu.cn through that internal SOCKS tunnel
+	// was observed to time out in the SG canary.
+	if c.ProxyURL != "" && (r.Executable == "bkectl" || r.Executable == "/usr/local/bin/bkectl") {
 		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
 			args = append(args, "--setenv", key, c.ProxyURL)
 		}

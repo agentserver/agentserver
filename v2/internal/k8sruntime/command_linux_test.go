@@ -22,6 +22,12 @@ func TestRuntimeProxyCannotBeOverriddenByCommand(t *testing.T) {
 	if err != nil || !strings.Contains(strings.Join(args, "\x00"), "HTTPS_PROXY\x00"+c.ProxyURL) {
 		t.Fatalf("proxy projection: %v %v", args, err)
 	}
+	r.Executable = "lark-cli"
+	args, err = sandboxArguments(c, r)
+	if err != nil || strings.Contains(strings.Join(args, "\x00"), "HTTPS_PROXY") {
+		t.Fatal("Lark traffic must not be routed into the internal ByteCloud proxy")
+	}
+	r.Executable = "bkectl"
 	for _, key := range []string{"HTTPS_PROXY", "http_proxy", "NO_PROXY", "all_proxy"} {
 		r.Environment = map[string]string{key: "attacker.example"}
 		if _, err := sandboxArguments(c, r); err == nil {

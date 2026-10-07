@@ -152,7 +152,7 @@ func assertReleaseBoundTerminalTurn(t *testing.T, release string, turn appServer
 		if turn.ItemsView != "notLoaded" || len(turn.Items) != 0 {
 			t.Fatalf("Codex %s terminal projection changed: %+v", release, turn)
 		}
-	case "0.146.0-alpha.14", "0.146.0":
+	case "0.146.0-alpha.14", "0.146.0", "0.160.1":
 		if turn.ItemsView != "summary" || len(turn.Items) != 1 ||
 			turn.Items[0]["type"] != "agentMessage" ||
 			turn.Items[0]["text"] != conformanceFinalText ||
@@ -393,7 +393,7 @@ func TestAppServerA03FilteredCandidatesHaveNoBuiltinTools(t *testing.T) {
 // this reverse request to the executor-gateway MCP transport.
 func TestAppServerA03DynamicExecutorBridgeHasExactToolSurface(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2", "0.160.1")
 
 	const callID = "call-a03-dynamic-executor"
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
@@ -536,7 +536,7 @@ func TestAppServerA03DynamicExecutorBridgeHasExactToolSurface(t *testing.T) {
 
 func TestAppServerA03DynamicExecutorBridgeRejectsUnregisteredCalls(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2", "0.160.1")
 
 	blockedExecutorCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a03-dynamic-blocked-executor",
@@ -767,7 +767,7 @@ func TestAppServerA03FilteredCandidatesRouteApprovedMCPTool(t *testing.T) {
 // environment variable is not an equivalent test or deployment mechanism.
 func TestAppServerA04ReleaseDebugRequirementsOverrideIsUnavailable(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	managedConfigPath := filepath.Join(paths.root, "managed_config.toml")
 	if err := os.WriteFile(managedConfigPath, []byte("\n"), 0o600); err != nil {
 		t.Fatalf("write managed config sentinel: %v", err)
@@ -814,7 +814,7 @@ func TestAppServerA04ReleaseDebugRequirementsOverrideIsUnavailable(t *testing.T)
 // the image-only probe separately proves the managed name/identity filter.
 func TestAppServerA04HTTPSMCPFixtureSensitivityControl(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	modelResponse, err := scriptedmodel.AssistantMessage(
 		"response-a04-https-control",
 		"message-a04-https-control",
@@ -875,7 +875,7 @@ func TestAppServerA04HTTPSMCPFixtureSensitivityControl(t *testing.T) {
 // fails the probe before tools/call can complete.
 func TestAppServerA05Codex0146ApproveModeDoesNotDoublePrompt(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a05-mcp-call",
 		"call-a05-mcp-call",
@@ -948,7 +948,7 @@ func TestAppServerA05Codex0146ApproveModeDoesNotDoublePrompt(t *testing.T) {
 // Codex-owned reverse request and must not reach tools/call after cancellation.
 func TestAppServerA05ProbeDetectsCodexGenericPrompt(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a05-control-call",
 		"call-a05-control-call",
@@ -1081,7 +1081,7 @@ func TestAppServerA06NeverPolicyAutoDeclinesMCPFormElicitation(t *testing.T) {
 // therefore cannot delegate expiry cleanup to Codex's MCP tool timeout.
 func TestAppServerA06MCPFormElicitationPausesToolTimeout(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	const (
 		toolTimeout       = 500 * time.Millisecond
 		observationWindow = 1500 * time.Millisecond
@@ -1224,7 +1224,7 @@ func TestAppServerA06MCPFormElicitationPausesToolTimeout(t *testing.T) {
 // second model request or tool call.
 func TestAppServerA07InterruptClearsPendingMCPFormElicitation(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	const callID = "call-a07-pending-elicitation"
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a07-call",
@@ -1337,7 +1337,7 @@ func TestAppServerA07InterruptClearsPendingMCPFormElicitation(t *testing.T) {
 
 func TestAppServerA07InterruptClearsPendingDynamicExecutorCall(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2", "0.160.1")
 	const callID = "call-a07-pending-dynamic-executor"
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a07-dynamic-call",
@@ -1438,7 +1438,7 @@ func TestAppServerA07InterruptClearsPendingDynamicExecutorCall(t *testing.T) {
 // matching terminal, and leaves no callback awaiting serverRequest/resolved.
 func TestAppServerA07HarnessWorkerRunnerUsesRealStdioWriterBarrier(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2", "0.160.1")
 
 	const callID = "call-a07-worker-runner"
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
@@ -1647,7 +1647,7 @@ func runA06MCPFormElicitation(
 ) {
 	t.Helper()
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	callID := "call-a06-" + caseID
 	toolArguments := fmt.Sprintf(`{"message":"request product approval: %s"}`, caseID)
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
@@ -2272,6 +2272,7 @@ func decodeTurnStart(t *testing.T, message codexwire.Message) appServerTurn {
 
 type scriptedModelConfigOptions struct {
 	disableUpdatePlan    bool
+	modelAuthEnvVar      string
 	modelEnvHeaderName   string
 	modelEnvHeaderVar    string
 	mcpServerURL         string
@@ -2304,8 +2305,11 @@ func writeScriptedModelConfigWithOptions(
 		t.Fatalf("invalid scripted model environment header variable %q", options.modelEnvHeaderVar)
 	}
 	modelEnvHeaders := ""
+	if options.modelAuthEnvVar != "" {
+		modelEnvHeaders = fmt.Sprintf("env_key = %q\n", options.modelAuthEnvVar)
+	}
 	if options.modelEnvHeaderName != "" {
-		modelEnvHeaders = fmt.Sprintf("env_http_headers = { %q = %q }\n", options.modelEnvHeaderName, options.modelEnvHeaderVar)
+		modelEnvHeaders += fmt.Sprintf("env_http_headers = { %q = %q }\n", options.modelEnvHeaderName, options.modelEnvHeaderVar)
 	}
 	config := fmt.Sprintf(`model = %q
 approval_policy = "never"
@@ -2591,6 +2595,16 @@ func modelInputContainsFunctionOutput(input []json.RawMessage, callID, wantText 
 		var outputText string
 		if json.Unmarshal(item.Output, &outputText) == nil && strings.Contains(outputText, wantText) {
 			return true
+		}
+		var content []struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(item.Output, &content) == nil {
+			for _, block := range content {
+				if strings.Contains(block.Text, wantText) {
+					return true
+				}
+			}
 		}
 		if strings.Contains(string(item.Output), wantText) {
 			return true

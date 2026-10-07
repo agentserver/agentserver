@@ -15,7 +15,7 @@ bundle/
 └── codex-resources/bwrap
 ```
 
-Both executables are official stock Codex 0.146.0 release artifacts for the
+Both executables are official stock Codex 0.160.1 release artifacts for the
 selected architecture and are verified by SHA-256 and size before packaging.
 The build never downloads them. The amd64 A12/E09 native isolation gates remain
 separate release evidence and must not be inferred from this packaging check.

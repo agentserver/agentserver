@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Application repair; optionally rebuild harness, retaining qualified sandbox
-# runtime, gateway, Codex bundle and node profiles.
+# runtime, gateway and node profiles. Harness builds install the current Codex.
 v2_root=$(cd "$(dirname "$0")/../.." && pwd)
 : "${RELEASE_DIRECTORY:?}" "${GITHUB_SHA:?}"
 test ! -e "$RELEASE_DIRECTORY"
@@ -23,6 +23,11 @@ docker inspect --format '{{index .RepoDigests 0}}' "$image" >"$RELEASE_DIRECTORY
 
 if [ "${PUBLISH_HARNESS:-false}" = true ]; then
   mkdir -p "$RELEASE_DIRECTORY/harness/bin"
+  if [ -n "${CODEX_RUNTIME_DIRECTORY:-}" ]; then
+    cp -R "$CODEX_RUNTIME_DIRECTORY" "$RELEASE_DIRECTORY/harness/runtime"
+  else
+    bash "$v2_root/deploy/production/prepare-kubernetes-codex.sh" "$RELEASE_DIRECTORY/harness/runtime"
+  fi
   harness_base=$(jq -er '.images.harness' "$v2_root/deploy/production/kubernetes-published-images.json")
   for binary in harness-pool harness-worker harness-init agentserver-probe; do
     destination=$binary
@@ -33,6 +38,7 @@ if [ "${PUBLISH_HARNESS:-false}" = true ]; then
   docker buildx build --platform linux/amd64 --load \
     --build-arg "SOURCE_REVISION=$GITHUB_SHA" --build-arg "HARNESS_BASE=$harness_base" \
     -t "$harness_image" -f "$v2_root/deploy/production/kubernetes-harness.Containerfile" "$RELEASE_DIRECTORY/harness"
+  docker run --rm --entrypoint /opt/agentserver/runtime/bundle/bin/codex "$harness_image" --version
   docker push "$harness_image"
   docker inspect --format '{{index .RepoDigests 0}}' "$harness_image" >"$RELEASE_DIRECTORY/harness.image"
 fi

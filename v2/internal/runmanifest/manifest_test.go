@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/ucarion/jcs"
 )
@@ -243,6 +244,19 @@ func TestRunManifestBindsCheckpointArtifactProfileAndToolPack(t *testing.T) {
 	}
 	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "versioned pack ID") {
 		t.Fatalf("invalid pack ID error = %v", err)
+	}
+}
+
+func TestRunManifestAllowsOnlyReviewedCheckpointUpgrade(t *testing.T) {
+	m := validManifest(t)
+	m.CodexRuntimeManifestDigest = stockruntime.ManifestSHA256
+	m.PreviousCheckpoint.CodexRuntimeManifestDigest = stockruntime.PreviousManifestSHA256
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	m.CodexRuntimeManifestDigest, m.PreviousCheckpoint.CodexRuntimeManifestDigest = m.PreviousCheckpoint.CodexRuntimeManifestDigest, m.CodexRuntimeManifestDigest
+	if err := m.Validate(); err == nil {
+		t.Fatal("accepted downgrade")
 	}
 }
 

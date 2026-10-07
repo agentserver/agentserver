@@ -13,6 +13,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
 func TestLoadCheckpointVerifiesAuthorityAndRestoresOneRollout(t *testing.T) {
@@ -60,7 +61,7 @@ func TestLoadCheckpointRejectsObjectAndSourceAuthorityDrift(t *testing.T) {
 	}{
 		{name: "outer object digest", mutate: func(m *runmanifest.Manifest) { m.PreviousCheckpoint.Object.SHA256 = strings.Repeat("0", 64) }, want: "object digest"},
 		{name: "source attempt generation", mutate: func(m *runmanifest.Manifest) { m.PreviousCheckpoint.RunAttemptGeneration++ }, want: "resume authority"},
-		{name: "runtime digest", mutate: func(m *runmanifest.Manifest) { m.CodexRuntimeManifestDigest = strings.Repeat("f", 64) }, want: "resume authority"},
+		{name: "runtime digest", mutate: func(m *runmanifest.Manifest) { m.CodexRuntimeManifestDigest = strings.Repeat("f", 64) }, want: "runtime transition"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -120,7 +121,29 @@ func TestLoadCheckpointRejectsSymlinkDestinationAndUnexpectedPipe(t *testing.T) 
 	}
 }
 
+func TestLoadCheckpointUpgradeAuthenticatesOriginalIdentity(t *testing.T) {
+	current, artifact, rollout := workerCheckpointFixtureForRuntime(t, stockruntime.PreviousManifestSHA256)
+	current.CodexRuntimeManifestDigest = stockruntime.ManifestSHA256
+	restored, err := LoadCheckpoint(workerCheckpointPipe(t, artifact), current, cleanCheckpointDirectory(t), cleanCheckpointDirectory(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(restored.RolloutPath)
+	if err != nil || !bytes.Equal(raw, rollout) || restored.Manifest.CodexRuntimeManifestDigest != stockruntime.PreviousManifestSHA256 {
+		t.Fatalf("upgrade modified source history or identity: %v", err)
+	}
+	// Claiming that old bytes came from the new runtime must still fail.
+	current.PreviousCheckpoint.CodexRuntimeManifestDigest = stockruntime.ManifestSHA256
+	if _, err := LoadCheckpoint(workerCheckpointPipe(t, artifact), current, cleanCheckpointDirectory(t), cleanCheckpointDirectory(t)); err == nil || !strings.Contains(err.Error(), "resume authority") {
+		t.Fatalf("forged source runtime accepted: %v", err)
+	}
+}
+
 func workerCheckpointFixture(t *testing.T) (runmanifest.Manifest, []byte, []byte) {
+	return workerCheckpointFixtureForRuntime(t, strings.Repeat("a", 64))
+}
+
+func workerCheckpointFixtureForRuntime(t *testing.T, runtimeDigest string) (runmanifest.Manifest, []byte, []byte) {
 	t.Helper()
 	rollout := []byte("{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-worker-checkpoint\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n")
 	rolloutDigest := sha256.Sum256(rollout)
@@ -132,7 +155,7 @@ func workerCheckpointFixture(t *testing.T) (runmanifest.Manifest, []byte, []byte
 		RunID:        "64000000-0000-4000-8000-000000000006",
 		RunAttemptID: "65000000-0000-4000-8000-000000000006", RunAttemptGeneration: 4,
 		BrainThreadID: "thread-worker-checkpoint", TerminalTurnID: "turn-worker-checkpoint",
-		CodexRuntimeManifestDigest: strings.Repeat("a", 64), CheckpointAllowlistVersion: 1,
+		CodexRuntimeManifestDigest: runtimeDigest, CheckpointAllowlistVersion: 1,
 		CatalogDigest: strings.Repeat("b", 64),
 		Files: []checkpoint.File{{
 			Purpose: checkpoint.RolloutPurpose, FileType: checkpoint.RegularFileType,

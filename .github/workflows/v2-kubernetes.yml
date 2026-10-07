@@ -1,5 +1,5 @@
 name: Publish v2 Kubernetes Sandbox Artifacts
-# Public DSH compilation is isolated from the SG-only application publisher.
+# DSH compilation is isolated; stock Codex 0.160.1 is qualified natively in SG.
 
 on:
   workflow_dispatch:
@@ -137,6 +137,23 @@ jobs:
       - name: Test chart-only changes
         if: ${{ inputs.chart_only || contains(github.event.head_commit.message, '[k8s chart]') }}
         run: go -C v2 test ./internal/productiondeploy
+      - name: Exercise stock Codex and previous-session upgrade on native Linux
+        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && !contains(github.event.head_commit.message, '[k8s service]') }}
+        run: |
+          set -euo pipefail
+          runtime_dir="${RUNNER_TEMP}/codex-current-runtime"
+          bash v2/deploy/production/prepare-kubernetes-codex.sh "$runtime_dir"
+          previous_dir=$(mktemp -d)
+          curl --fail --location --retry 3 \
+            https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz \
+            --output "$previous_dir/codex.tar.gz"
+          tar -xzf "$previous_dir/codex.tar.gz" -C "$previous_dir"
+          AGENTSERVER_RUN_LIVE_CODEX=1 \
+          AGENTSERVER_CODEX_BIN="$runtime_dir/bundle/bin/codex" \
+          AGENTSERVER_PREVIOUS_CODEX_BIN="$previous_dir/codex-x86_64-unknown-linux-musl" \
+          go -C v2 test ./conformance/codex -count=1 -v \
+            -run 'TestAppServer(A01|A03Dynamic|A07(Harness|InterruptClearsPendingDynamic)|A09|A11|ModelReceivesDecoded|TemporaryTitle)'
+          printf 'CODEX_RUNTIME_DIRECTORY=%s\n' "$runtime_dir" >>"$GITHUB_ENV"
       - name: Download the previously deployed runtime configuration
         uses: actions/download-artifact@v4
         with:
@@ -186,7 +203,7 @@ jobs:
             --service-image="$(mirror service)" --harness-image="$(mirror harness)" \
             --runtime-image="$(mirror k8s-runtime)" --gateway-image="$(mirror k8s-gateway)" \
             --environment-id=4e0e31cf-a8c9-4ef9-8197-71be586532df \
-            --api-cidr=10.251.224.59/32 --all-workspaces
+            --api-cidr=10.251.224.59/32 --all-workspaces --upgrade-codex
           go -C v2 run ./cmd/agentserver-deploy chart \
             --config="$release_dir/production.json" --output="$release_dir/chart"
           helm lint "$release_dir/chart" --namespace agentserver

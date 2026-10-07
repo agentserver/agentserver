@@ -1,6 +1,7 @@
 package harnessworker
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -17,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/agentserver/agentserver/v2/internal/tooloutput"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/ucarion/jcs"
@@ -410,7 +413,7 @@ func (c *MCPClient) CallDynamicTool(ctx context.Context, call DynamicCall) (Dyna
 	if callErr != nil {
 		return DynamicToolResult{}, fmt.Errorf("executor MCP tools/call %q: %w", call.Tool, callErr)
 	}
-	converted, err := convertToolResult(toolResult, c.limits)
+	converted, err := convertToolResult(toolResult, c.limits, call.Namespace, call.Tool)
 	if err != nil {
 		return DynamicToolResult{}, fmt.Errorf("executor MCP tools/call %q result: %w", call.Tool, err)
 	}
@@ -583,7 +586,7 @@ func validateDynamicCallEnvelope(call DynamicCall) error {
 	return nil
 }
 
-func convertToolResult(result *mcp.CallToolResult, limits Limits) (DynamicToolResult, error) {
+func convertToolResult(result *mcp.CallToolResult, limits Limits, namespace, tool string) (DynamicToolResult, error) {
 	if result == nil {
 		return DynamicToolResult{}, errors.New("result is nil")
 	}
@@ -599,6 +602,24 @@ func convertToolResult(result *mcp.CallToolResult, limits Limits) (DynamicToolRe
 	}
 	if len(result.Content) > limits.MaxResultItems {
 		return DynamicToolResult{}, fmt.Errorf("result has %d content items, limit is %d", len(result.Content), limits.MaxResultItems)
+	}
+	var structured []byte
+	var projected string
+	var known bool
+	if result.StructuredContent != nil {
+		structured, err = jcs.Append(nil, result.StructuredContent)
+		if err != nil {
+			return DynamicToolResult{}, fmt.Errorf("canonicalize structured content: %w", err)
+		}
+		// Reserve room for the surrounding notification, arguments, and the
+		// runner's retained raw/parsed copies under its existing event bound.
+		projected, known, err = tooloutput.Render(namespace, tool, structured, min(limits.MaxResultTextBytes, workerMaxEventBytes/4))
+		if err != nil {
+			return DynamicToolResult{}, fmt.Errorf("render executor result: %w", err)
+		}
+		if !known {
+			projected = string(structured)
+		}
 	}
 	items := make([]InputTextContent, 0, len(result.Content)+1)
 	totalText := 0
@@ -618,6 +639,12 @@ func convertToolResult(result *mcp.CallToolResult, limits Limits) (DynamicToolRe
 		if !ok || text == nil {
 			return DynamicToolResult{}, fmt.Errorf("result content item %d has forbidden type %T", index, content)
 		}
+		// MCP SDKs may mirror structuredContent as a text item. Suppress only
+		// an exact semantic duplicate for a recognized executor result, so raw
+		// base64 cannot leak alongside the decoded view. Keep other text intact.
+		if known && duplicateStructuredText(text.Text, structured) {
+			continue
+		}
 		if err := appendText(text.Text); err != nil {
 			return DynamicToolResult{}, fmt.Errorf("result content item %d: %w", index, err)
 		}
@@ -626,11 +653,10 @@ func convertToolResult(result *mcp.CallToolResult, limits Limits) (DynamicToolRe
 		if len(items) >= limits.MaxResultItems {
 			return DynamicToolResult{}, fmt.Errorf("result exceeds %d projected content items", limits.MaxResultItems)
 		}
-		structured, err := jcs.Append(nil, result.StructuredContent)
-		if err != nil {
-			return DynamicToolResult{}, fmt.Errorf("canonicalize structured content: %w", err)
+		if known {
+			projected = tooloutput.Bound(projected, limits.MaxResultTextBytes-totalText)
 		}
-		if err := appendText(string(structured)); err != nil {
+		if err := appendText(projected); err != nil {
 			return DynamicToolResult{}, fmt.Errorf("structured content: %w", err)
 		}
 	}
@@ -638,6 +664,15 @@ func convertToolResult(result *mcp.CallToolResult, limits Limits) (DynamicToolRe
 		return DynamicToolResult{}, errors.New("result has no text or structured content")
 	}
 	return DynamicToolResult{ContentItems: items, Success: !result.IsError}, nil
+}
+
+func duplicateStructuredText(text string, structured []byte) bool {
+	var value any
+	if json.Unmarshal([]byte(text), &value) != nil {
+		return false
+	}
+	canonical, err := jcs.Append(nil, value)
+	return err == nil && bytes.Equal(canonical, structured)
 }
 
 type approvalMetadata struct {

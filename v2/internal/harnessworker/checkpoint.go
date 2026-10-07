@@ -13,6 +13,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
 // RestoredCheckpoint is the only native-resume state exposed to the worker
@@ -38,6 +39,11 @@ func LoadCheckpoint(checkpointPipe *os.File, current runmanifest.Manifest, codex
 	}
 	if checkpointPipe == nil {
 		return nil, errors.New("worker checkpoint pipe is required by the signed run manifest")
+	}
+	if !stockruntime.CanResumeCheckpoint(previous.CodexRuntimeManifestDigest, current.CodexRuntimeManifestDigest,
+		previous.CheckpointAllowlistVersion, int64(current.CheckpointAllowlistVersion)) {
+		_ = checkpointPipe.Close()
+		return nil, errors.New("worker checkpoint runtime transition is not supported")
 	}
 	info, err := checkpointPipe.Stat()
 	if err != nil {
@@ -88,7 +94,7 @@ func LoadCheckpoint(checkpointPipe *os.File, current runmanifest.Manifest, codex
 			RunID: previous.RunID, RunAttemptID: previous.RunAttemptID,
 			RunAttemptGeneration: previous.RunAttemptGeneration,
 			BrainThreadID:        previous.ThreadID, TerminalTurnID: previous.TurnID,
-			CodexRuntimeManifestDigest: current.CodexRuntimeManifestDigest,
+			CodexRuntimeManifestDigest: previous.CodexRuntimeManifestDigest,
 			CheckpointAllowlistVersion: int64(current.CheckpointAllowlistVersion),
 			CatalogDigest:              current.ExecutorMCP.CatalogDigest,
 		}

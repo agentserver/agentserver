@@ -5,7 +5,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 v2_root=$(CDPATH= cd -- "${script_dir}/../.." && pwd -P)
 workspace=$(CDPATH= cd -- "${v2_root}/.." && pwd -P)
 state_volume=""
-image=agentserver-v2-insecure-dev:0.146.0
+image=agentserver-v2-insecure-dev:0.160.1
 name=agentserver-v2-dev
 browser_port=17444
 cpus=4

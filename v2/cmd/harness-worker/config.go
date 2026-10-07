@@ -239,7 +239,7 @@ func validateWorkerDeploymentDocument(document workerDeploymentDocument) error {
 	if !workerDigestPattern.MatchString(document.FinalExec.SHA256) || document.FinalExec.SizeBytes < 1 {
 		return errors.New("worker deployment final-exec artifact must have canonical SHA-256 and positive size")
 	}
-	if document.CodexConfigProfile != harnessworker.CodexConfigProfileStable0146 {
+	if document.CodexConfigProfile != harnessworker.CodexConfigProfileStable0146 && document.CodexConfigProfile != harnessworker.CodexConfigProfileStable0160 {
 		return errors.New("worker deployment Codex config profile is unsupported")
 	}
 	for label, identity := range map[string]uint32{

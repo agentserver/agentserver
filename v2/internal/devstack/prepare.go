@@ -420,7 +420,7 @@ func renderOutputFiles(
 		Version: workerDeploymentVersion, RunManifestKeyringFile: paths.keyring,
 		RuntimeManifestFile: config.Document.Runtime.ManifestFile, RuntimeBundleRoot: config.Document.Runtime.BundleRoot,
 		FinalExec:          workerArtifactDocument{Path: config.Document.Runtime.HarnessFinalExecBinary, SHA256: finalExecDigest, SizeBytes: finalExecSize},
-		CodexConfigProfile: harnessworker.CodexConfigProfileStable0146,
+		CodexConfigProfile: harnessworker.CodexConfigProfileStable0160,
 		WorkerUID:          identities.WorkerUID, WorkerGID: identities.WorkerGID, AppUID: identities.AppUID, AppGID: identities.AppGID,
 		TLS: workerTLSDocument{
 			CAFile: paths.ca, CertificateFile: paths.certificates["harness-worker"], KeyFile: paths.privateKeys["harness-worker"],

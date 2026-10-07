@@ -18,6 +18,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
+	"github.com/agentserver/agentserver/v2/internal/tooloutput"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -184,11 +185,11 @@ func TestExecutorMCPShellUsesAuthenticatedCallContextAndTerminalOrchestrator(t *
 	if !result.Success || len(result.ContentItems) != 1 {
 		t.Fatalf("MCP shell result = %+v", result)
 	}
-	var shellResult ShellV1Result
-	if err := json.Unmarshal([]byte(result.ContentItems[0].Text), &shellResult); err != nil {
-		t.Fatal(err)
+	shellResult, body, ok := tooloutput.Parse(result.ContentItems[0].Text)
+	if !ok || shellResult.Format != tooloutput.ShellFormat || body != "(no output)" {
+		t.Fatalf("readable shell view = %s", result.ContentItems[0].Text)
 	}
-	if shellResult.Status != "succeeded" || !shellResult.OutputComplete || dispatcher.count() != 1 || authority.executionStatus() != "succeeded" {
+	if shellResult.Status != "succeeded" || shellResult.OutputComplete == nil || !*shellResult.OutputComplete || dispatcher.count() != 1 || authority.executionStatus() != "succeeded" {
 		t.Fatalf("terminal MCP shell result=%+v dispatches=%d core=%q", shellResult, dispatcher.count(), authority.executionStatus())
 	}
 }
@@ -279,12 +280,11 @@ func TestExecutorMCPReadFileUsesFullCatalogAndBoundedExecutor(t *testing.T) {
 	if !result.Success || len(result.ContentItems) != 1 {
 		t.Fatalf("MCP read_file result = %+v", result)
 	}
-	var readResult ReadFileV1Result
-	if err := json.Unmarshal([]byte(result.ContentItems[0].Text), &readResult); err != nil {
-		t.Fatal(err)
+	readResult, body, ok := tooloutput.Parse(result.ContentItems[0].Text)
+	if !ok || readResult.Format != tooloutput.FileFormat || !readResult.NonText || !strings.Contains(body, "Non-text output: 1048576 bytes") {
+		t.Fatalf("binary file view=%s", result.ContentItems[0].Text)
 	}
-	if readResult.Status != "succeeded" || readResult.Encoding != "base64" || len(readResult.Content) != 1_398_104 ||
-		readResult.BytesRead != execprofile.MaxFilesystemReadLength || authority.execution.Status != "succeeded" {
+	if readResult.Status != "succeeded" || readResult.BytesRead == nil || *readResult.BytesRead != execprofile.MaxFilesystemReadLength || authority.execution.Status != "succeeded" {
 		t.Fatalf("terminal MCP read_file result=%+v core=%q", readResult, authority.execution.Status)
 	}
 }

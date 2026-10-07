@@ -242,8 +242,8 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if err != nil {
 		return LoadedConfig{}, fmt.Errorf("parse runtime manifest: %w", err)
 	}
-	if manifest.CodexRelease != "0.146.0" {
-		return LoadedConfig{}, fmt.Errorf("runtime manifest Codex release must be 0.146.0 for profile %s", harnessworker.CodexConfigProfileStable0146)
+	if manifest.CodexRelease != "0.160.1" {
+		return LoadedConfig{}, fmt.Errorf("runtime manifest Codex release must be 0.160.1 for profile %s", harnessworker.CodexConfigProfileStable0160)
 	}
 	if _, err := manifest.VerifyCurrentPlatform(document.Runtime.BundleRoot); err != nil {
 		return LoadedConfig{}, fmt.Errorf("verify current-platform runtime bundle: %w", err)

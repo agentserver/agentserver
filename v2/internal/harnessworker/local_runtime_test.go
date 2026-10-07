@@ -12,7 +12,7 @@ import (
 func TestRenderCodexConfigContainsOnlyFrozenModelRouteAndDisabledLocalTools(t *testing.T) {
 	catalog := runnerTestCatalog(t)
 	manifest, _, _ := oneShotSignedManifest(t, catalog, []byte(oneShotPrompt))
-	raw, err := renderCodexConfig(CodexConfigProfileStable0146, manifest)
+	raw, err := renderCodexConfig(CodexConfigProfileStable0160, manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +68,16 @@ func TestLocalWorkerRuntimePreparerRejectsProfileAndDigestDrift(t *testing.T) {
 	}
 	if _, err := NewLocalWorkerRuntimePreparer(config); err != nil {
 		t.Fatalf("valid local runtime preparer config: %v", err)
+	}
+	current := config
+	current.CodexConfigProfile = CodexConfigProfileStable0160
+	current.RuntimeManifest.CodexRelease = "0.160.1"
+	if _, err := NewLocalWorkerRuntimePreparer(current); err != nil {
+		t.Fatalf("current runtime profile: %v", err)
+	}
+	current.RuntimeManifest.CodexRelease = "0.146.0"
+	if _, err := NewLocalWorkerRuntimePreparer(current); err == nil {
+		t.Fatal("accepted current config profile with previous binary")
 	}
 
 	tests := []struct {

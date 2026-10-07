@@ -3,7 +3,7 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 v2_root=$(CDPATH= cd -- "${script_dir}/../.." && pwd -P)
-image=agentserver-v2-insecure-dev:0.146.0
+image=agentserver-v2-insecure-dev:0.160.1
 codex=""
 bwrap=""
 agentx_source=""

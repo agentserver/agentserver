@@ -18,7 +18,7 @@ image:
   custom events.
 
 The image build does not download Codex or bwrap. It accepts only the exact
-official Linux arm64 0.146.0 artifacts pinned by `internal/devruntime`; a
+official Linux arm64 0.160.1 artifacts pinned by `internal/devruntime`; a
 digest or size mismatch fails the image build. agentx remains an independent
 source tree and is copied into the temporary build context only as a compiled
 binary.

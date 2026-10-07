@@ -12,6 +12,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
@@ -156,8 +157,8 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 	var previousCheckpoint *runmanifest.PreviousCheckpoint
 	var previousCatalog *BrainToolCatalog
 	if state.PreviousCheckpoint != nil {
-		if state.PreviousCheckpoint.Checkpoint.CodexRuntimeManifestDigest != profile.CodexRuntimeManifestDigest ||
-			state.PreviousCheckpoint.Checkpoint.CheckpointAllowlistVersion != int64(profile.CheckpointAllowlistVersion) {
+		if !stockruntime.CanResumeCheckpoint(state.PreviousCheckpoint.Checkpoint.CodexRuntimeManifestDigest, profile.CodexRuntimeManifestDigest,
+			state.PreviousCheckpoint.Checkpoint.CheckpointAllowlistVersion, int64(profile.CheckpointAllowlistVersion)) {
 			return RunLaunchInputs{}, errors.New("previous checkpoint runtime manifest or allowlist version does not match the deployment profile")
 		}
 		proposal, err := BuildExecutorCatalog(policy)

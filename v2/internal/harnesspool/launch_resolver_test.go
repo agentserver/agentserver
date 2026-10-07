@@ -10,11 +10,13 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *testing.T) {
 	base := testRunLaunchInputs()
+	base.CodexRuntimeManifestDigest = stockruntime.ManifestSHA256
 	base.PermissionMode = runmanifest.CodexPermissionModeAuto
 	proposal, err := BuildExecutorCatalog(base.ExecutorCatalogPolicy)
 	if err != nil {
@@ -25,7 +27,7 @@ func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *test
 		RunID:        "4c000000-0000-4000-8000-000000000004", RunAttemptID: "4d000000-0000-4000-8000-000000000004",
 		RunAttemptGeneration: 2, ThreadID: "thread-previous", TurnID: "turn-previous",
 		ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
-		CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
+		CodexRuntimeManifestDigest: stockruntime.PreviousManifestSHA256,
 		CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
 		Object: runmanifest.ObjectPointer{
 			ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),

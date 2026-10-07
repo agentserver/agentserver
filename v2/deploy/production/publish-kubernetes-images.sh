@@ -7,6 +7,11 @@ v2_root=$(cd "$(dirname "$0")/../.." && pwd)
 test ! -e "$RELEASE_DIRECTORY"
 test -f "$v2_root/dsh-web/dist/plugin-resources.json" || { printf '%s\n' 'Build the pinned DSH submodule with bash v2/dsh-web/build.sh first' >&2; exit 1; }
 mkdir -p "$RELEASE_DIRECTORY/cli/bkectl-skills" "$RELEASE_DIRECTORY/service/bin" "$RELEASE_DIRECTORY/harness/bin"
+if [ -n "${CODEX_RUNTIME_DIRECTORY:-}" ]; then
+  cp -R "$CODEX_RUNTIME_DIRECTORY" "$RELEASE_DIRECTORY/harness/runtime"
+else
+  bash "$v2_root/deploy/production/prepare-kubernetes-codex.sh" "$RELEASE_DIRECTORY/harness/runtime"
+fi
 cli_container=$(docker create "$CLI_BASE" /usr/local/bin/bkectl)
 harness_container=$(docker create "$HARNESS_BASE" /usr/local/bin/harness-pool)
 trap 'docker rm "$cli_container" "$harness_container" >/dev/null' EXIT

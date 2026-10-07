@@ -81,7 +81,7 @@ type secretSentinel struct {
 // complete JSONL file, and the state database must have a SQLite header.
 func TestAppServerA08GracefulShutdownStabilizesState(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	response, err := scriptedmodel.AssistantMessage(
 		"response-a08-graceful-shutdown",
 		"message-a08-graceful-shutdown",
@@ -163,7 +163,7 @@ func TestAppServerA08GracefulShutdownStabilizesState(t *testing.T) {
 // cannot attribute the problem to the persisted executor result or file set.
 func TestAppServerA09CompletedTurnResumeControl(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	firstFinal, err := scriptedmodel.AssistantMessage(
 		"response-a09-control-first",
 		"message-a09-control-first",
@@ -251,7 +251,7 @@ func TestAppServerA09CompletedTurnResumeControl(t *testing.T) {
 // the first user turn and the exact MCP function result.
 func TestAppServerA09RolloutOnlyCheckpointRoundTrip(t *testing.T) {
 	binary, sourcePaths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a09-tool-call",
 		a09ToolCallID,
@@ -476,9 +476,29 @@ func TestAppServerA09RolloutOnlyCheckpointRoundTrip(t *testing.T) {
 // and never invokes the executor side effect again.
 func TestAppServerA09DynamicRunnerCheckpointRoundTrip(t *testing.T) {
 	binary, sourcePaths := prepareLiveCodex(t)
-	// Stable 0.146.0 is currently the intersection of the release-bound
-	// dynamic bridge and rollout-only checkpoint evidence.
-	requireCandidateRelease(t, binary, sourcePaths, "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0", "0.160.1")
+	testDynamicRunnerCheckpointRoundTrip(t, binary, binary, sourcePaths)
+}
+
+// A runtime upgrade must preserve native history and the frozen tool catalog,
+// without replaying completed side effects. No source CODEX_HOME is available
+// to the target process: only the allowlisted rollout crosses the boundary.
+func TestAppServerA09Upgrade0146To0160Checkpoint(t *testing.T) {
+	target, paths := prepareLiveCodex(t)
+	requireCandidateRelease(t, target, paths, "0.160.1")
+	source := os.Getenv("AGENTSERVER_PREVIOUS_CODEX_BIN")
+	if source == "" {
+		t.Skip("set AGENTSERVER_PREVIOUS_CODEX_BIN to the 0.146.0 binary for upgrade conformance")
+	}
+	if !filepath.IsAbs(source) {
+		t.Fatal("AGENTSERVER_PREVIOUS_CODEX_BIN must be absolute")
+	}
+	requireCandidateRelease(t, source, paths, "0.146.0")
+	testDynamicRunnerCheckpointRoundTrip(t, source, target, paths)
+}
+
+func testDynamicRunnerCheckpointRoundTrip(t *testing.T, binary, targetBinary string, sourcePaths livePaths) {
+	t.Helper()
 	catalog := approvedDynamicExecutorCatalog(t)
 
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
@@ -639,7 +659,7 @@ func TestAppServerA09DynamicRunnerCheckpointRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondProcess := startPreparedLiveCodex(t, binary, restoredPaths, "app-server", "--listen", "stdio://", "--strict-config")
+	secondProcess := startPreparedLiveCodex(t, targetBinary, restoredPaths, "app-server", "--listen", "stdio://", "--strict-config")
 	secondRunner, err := harnessworker.NewAppServerRunner(
 		secondProcess.Peer,
 		secondBridge,
@@ -763,7 +783,7 @@ func modelToolValues(t *testing.T, tools []json.RawMessage) []any {
 // and omit the abandoned turn's input from the model-visible history.
 func TestAppServerA10MidTurnCrashRestoresLastCompletedCheckpoint(t *testing.T) {
 	binary, sourcePaths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	baseFinal, err := scriptedmodel.AssistantMessage(
 		"response-a10-base-final",
 		"message-a10-base-final",
@@ -966,7 +986,7 @@ func TestAppServerA10MidTurnCrashRestoresLastCompletedCheckpoint(t *testing.T) {
 // files. Model-visible user and MCP-result markers remain intact.
 func TestAppServerA11CheckpointExcludesRuntimeSecrets(t *testing.T) {
 	binary, sourcePaths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0-alpha.14", "0.146.0", "0.160.1")
 	secrets := a11SecretSentinels()
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a11-tool-call",
@@ -1188,7 +1208,7 @@ func TestAppServerA11CheckpointExcludesRuntimeSecrets(t *testing.T) {
 // but must not replay the completed tool side effect.
 func TestAppServerA11WorkerOwnedCredentialCheckpointRoundTrip(t *testing.T) {
 	binary, sourcePaths := prepareLiveCodex(t)
-	requireCandidateRelease(t, binary, sourcePaths, "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0", "0.160.1")
 	catalog := approvedDynamicExecutorCatalog(t)
 	secrets := a11SecretSentinels()
 	credentialSecrets := []secretSentinel{
@@ -1256,6 +1276,7 @@ func TestAppServerA11WorkerOwnedCredentialCheckpointRoundTrip(t *testing.T) {
 	})
 	writeA11RuntimeSecretFiles(t, sourcePaths.codexHome)
 	assertA11WorkerCredentialBoundary(t, "source", sourcePaths, firstGateway.Endpoint(), credentialSecrets)
+	configureA11WorkerModelCapability(t, &sourcePaths, firstModelServer.URL())
 	firstProcess := startPreparedLiveCodex(t, binary, sourcePaths, "app-server", "--listen", "stdio://", "--strict-config")
 	firstRunner, err := harnessworker.NewAppServerRunner(
 		firstProcess.Peer,
@@ -1418,6 +1439,7 @@ func TestAppServerA11WorkerOwnedCredentialCheckpointRoundTrip(t *testing.T) {
 	})
 	writeA11RuntimeSecretFiles(t, restoredPaths.codexHome)
 	assertA11WorkerCredentialBoundary(t, "restored", restoredPaths, secondGateway.Endpoint(), credentialSecrets)
+	configureA11WorkerModelCapability(t, &restoredPaths, secondModelServer.URL())
 	secondProcess := startPreparedLiveCodex(t, binary, restoredPaths, "app-server", "--listen", "stdio://", "--strict-config")
 	secondRunner, err := harnessworker.NewAppServerRunner(
 		secondProcess.Peer,
@@ -1663,6 +1685,18 @@ func a11RuntimeSecretFileSentinels() map[string]secretSentinel {
 		"tokens/a11.token":           {Label: "token file", Value: a11TokenFileSecret},
 		"transport/a11-buffer.jsonl": {Label: "transport buffer", Value: a11TransportSecret},
 	}
+}
+
+// Production supplies an attempt-scoped model capability through env_key,
+// never through auth.json. New Codex no longer implicitly uses OpenAI auth
+// for a custom provider; exercise the real provider contract on both releases.
+func configureA11WorkerModelCapability(t *testing.T, paths *livePaths, serverURL string) {
+	t.Helper()
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, serverURL, scriptedModelConfigOptions{
+		disableUpdatePlan: true, modelAuthEnvVar: harnessworker.AppServerModelCapabilityEnvironment,
+	})
+	writeA11RuntimeSecretFiles(t, paths.codexHome)
+	paths.environment = append(paths.environment, harnessworker.AppServerModelCapabilityEnvironment+"="+a11ModelAuthSecret)
 }
 
 func writeA11RuntimeSecretFiles(t *testing.T, codexHome string) {

@@ -1109,4 +1109,4 @@ func PlatformOAuthAudience() string { return corecontract.PlatformOAuthAudience 
 
 func PlatformOAuthScopes() []string { return corecontract.PlatformOAuthScopes() }
 
-func CodexConfigProfile() string { return harnessworker.CodexConfigProfileStable0146 }
+func CodexConfigProfile() string { return harnessworker.CodexConfigProfileStable0160 }

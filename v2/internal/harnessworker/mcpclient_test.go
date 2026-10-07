@@ -1,9 +1,11 @@
 package harnessworker
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,8 @@ import (
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/tooloutput"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -605,22 +609,23 @@ func TestMCPClientFailsClosedOnCatalogMismatchAndForbiddenResult(t *testing.T) {
 }
 
 func TestDefaultMCPResultLimitsHoldMaximumBoundedReadFileBlock(t *testing.T) {
-	const maximumBase64Bytes = 1_398_104
 	result := &mcp.CallToolResult{
 		Content: []mcp.Content{},
 		StructuredContent: map[string]any{
 			"status": "succeeded", "path": "data.bin", "offset": float64(0),
 			"requested_bytes": float64(1_048_576), "bytes_read": float64(1_048_576),
-			"eof": true, "encoding": "base64", "content": strings.Repeat("A", maximumBase64Bytes),
+			"eof": true, "encoding": "base64", "content": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0}, 1_048_576)),
 		},
 	}
-	converted, err := convertToolResult(result, DefaultLimits())
+	converted, err := convertToolResult(result, DefaultLimits(), "executor", "read_file")
 	if err != nil {
 		t.Fatalf("maximum bounded read_file result was rejected: %v", err)
 	}
-	if len(converted.ContentItems) != 1 || len(converted.ContentItems[0].Text) <= 1024*1024 ||
-		len(converted.ContentItems[0].Text) > DefaultLimits().MaxResultTextBytes {
+	if len(converted.ContentItems) != 1 || !strings.Contains(converted.ContentItems[0].Text, "Non-text output: 1048576 bytes") || len(converted.ContentItems[0].Text) > 1024 {
 		t.Fatalf("maximum read_file projection bytes = %d", len(converted.ContentItems[0].Text))
+	}
+	if summary, _, ok := tooloutput.Parse(converted.ContentItems[0].Text); !ok || summary.BytesRead == nil || *summary.BytesRead != 1_048_576 {
+		t.Fatal("lost binary block metadata")
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 
 const (
 	CodexConfigProfileStable0146 = "stable-0.146.0-dynamic-only-v1"
+	CodexConfigProfileStable0160 = "stable-0.160.1-dynamic-only-v1"
 
 	maximumCodexConfigBytes = 64 * 1024
 )
@@ -262,8 +263,9 @@ func validateLocalWorkerRuntimePreparerConfig(config LocalWorkerRuntimePreparerC
 	if err := validateLocalVerifiedFile("harness-final-exec", config.FinalExec); err != nil {
 		return err
 	}
-	if config.CodexConfigProfile != CodexConfigProfileStable0146 || config.RuntimeManifest.CodexRelease != "0.146.0" {
-		return errors.New("local Codex config profile must exactly match stable stock Codex 0.146.0")
+	if !((config.CodexConfigProfile == CodexConfigProfileStable0146 && config.RuntimeManifest.CodexRelease == "0.146.0") ||
+		(config.CodexConfigProfile == CodexConfigProfileStable0160 && config.RuntimeManifest.CodexRelease == "0.160.1")) {
+		return errors.New("local Codex config profile must exactly match stable stock Codex 0.146.0 or 0.160.1")
 	}
 	if config.TLSRootCertificateFile == "" || !filepath.IsAbs(config.TLSRootCertificateFile) ||
 		filepath.Clean(config.TLSRootCertificateFile) != config.TLSRootCertificateFile ||
@@ -309,7 +311,7 @@ func valueOrDefault(value, fallback int) int {
 }
 
 func renderCodexConfig(profile string, manifest runmanifest.Manifest) ([]byte, error) {
-	if profile != CodexConfigProfileStable0146 {
+	if profile != CodexConfigProfileStable0146 && profile != CodexConfigProfileStable0160 {
 		return nil, errors.New("unsupported Codex config profile")
 	}
 	if err := manifest.Validate(); err != nil {

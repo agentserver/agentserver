@@ -35,7 +35,7 @@ type Result struct {
 }
 
 // Prepare creates a new immutable-by-permissions development runtime package.
-// It accepts only the exact official stable 0.146.0 Linux arm64 artifacts
+// It accepts only the exact official stable 0.160.1 Linux arm64 artifacts
 // already characterized by the repository's native image gates.
 func Prepare(config PrepareConfig) (_ Result, returnErr error) {
 	if config.Platform != PlatformLinuxARM64 {

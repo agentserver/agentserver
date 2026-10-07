@@ -16,6 +16,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/runevent"
 	"github.com/agentserver/agentserver/v2/internal/sessiontitle"
+	"github.com/agentserver/agentserver/v2/internal/tooloutput"
 )
 
 const (
@@ -298,6 +299,12 @@ func (mapper *runtimeEventMapper) mapItemCompleted(raw json.RawMessage) ([]mappe
 		}
 		payload := runevent.ToolCallResultPayload{
 			MessageID: item.ID, ToolCallID: item.ID, Content: boundedProjectionText(content),
+		}
+		if state.tool == mcpcontract.ToolShell || state.tool == mcpcontract.ToolReadFile {
+			readable := tooloutput.Historical(state.name, content, maximumInlineProjectionText)
+			if summary, _, ok := tooloutput.Parse(readable); ok && ((state.tool == mcpcontract.ToolShell && summary.Format == tooloutput.ShellFormat) || (state.tool == mcpcontract.ToolReadFile && summary.Format == tooloutput.FileFormat)) {
+				payload.Content = tooloutput.Bound(readable, maximumInlineProjectionText)
+			}
 		}
 		if state.tool == mcpcontract.ToolShell {
 			payload.Presentation = shellPresentation(state.arguments, item.ContentItems)
@@ -665,6 +672,12 @@ func shellPresentation(arguments json.RawMessage, contents []dynamicToolContentI
 	}
 	if json.Unmarshal(arguments, &input) != nil || len(input.Argv) == 0 || len(contents) == 0 {
 		return nil
+	}
+	if summary, _, ok := tooloutput.Parse(contents[len(contents)-1].Text); ok && summary.Format == tooloutput.ShellFormat {
+		bounded := tooloutput.Bound(contents[len(contents)-1].Text, maximumCommandCardOutput)
+		summary, body, _ := tooloutput.Parse(bounded)
+		command, _ := json.Marshal(input.Argv)
+		return &runevent.ToolPresentation{Kind: "command", Command: &runevent.CommandPresentation{Command: string(command), Output: body, Status: summary.CommandStatus()}}
 	}
 	var result shellResult
 	if json.Unmarshal([]byte(contents[len(contents)-1].Text), &result) != nil {

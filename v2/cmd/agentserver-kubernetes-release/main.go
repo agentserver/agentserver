@@ -15,7 +15,8 @@ func main() {
 	output := flag.String("output", "", "new production JSON")
 	var release productiondeploy.KubernetesRelease
 	flag.StringVar(&release.ServiceImage, "service-image", "", "published service image")
-	flag.StringVar(&release.HarnessImage, "harness-image", "", "published harness image retaining the base runtime bundle")
+	flag.StringVar(&release.HarnessImage, "harness-image", "", "published harness image with the selected stock runtime bundle")
+	flag.BoolVar(&release.UpgradeCodex, "upgrade-codex", false, "explicitly upgrade the previous runtime metadata to the current packaged Codex release")
 	flag.StringVar(&release.RuntimeImage, "runtime-image", "", "published Kubernetes runtime image")
 	flag.StringVar(&release.GatewayImage, "gateway-image", "", "published Kubernetes gateway image")
 	flag.StringVar(&release.EnvironmentID, "environment-id", "", "Kubernetes-only environment UUID")
@@ -29,7 +30,7 @@ func main() {
 }
 
 func run(input, output string, release productiondeploy.KubernetesRelease) error {
-	base, err := productiondeploy.LoadConfig(input)
+	base, err := productiondeploy.LoadKubernetesReleaseBase(input, release.UpgradeCodex)
 	if err != nil {
 		return err
 	}

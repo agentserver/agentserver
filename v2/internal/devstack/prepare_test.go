@@ -476,7 +476,7 @@ func newConfigFixture(t *testing.T) configFixture {
 		t.Fatal(err)
 	}
 	codexPath := filepath.Join(bundle, "bin", "codex")
-	if err := os.WriteFile(codexPath, []byte("pinned-stock-codex-0.146.0"), 0o500); err != nil {
+	if err := os.WriteFile(codexPath, []byte("pinned-stock-codex-0.160.1"), 0o500); err != nil {
 		t.Fatal(err)
 	}
 	codexDigest, codexSize, err := runtimelock.HashFile(codexPath)
@@ -530,7 +530,7 @@ func newConfigFixture(t *testing.T) configFixture {
 
 func testRuntimeManifest(codexDigest string, codexSize int64) runtimelock.Manifest {
 	return runtimelock.Manifest{
-		ManifestVersion: runtimelock.CurrentManifestVersion, CodexRelease: "0.146.0",
+		ManifestVersion: runtimelock.CurrentManifestVersion, CodexRelease: "0.160.1",
 		CodexCommit: strings.Repeat("a", 40), AppServerSchemaSHA256: strings.Repeat("b", 64),
 		AppServerSchemaDigestAlgorithm: runtimelock.AppServerSchemaDigestAlgorithmV1,
 		ExecProtocolSourceSHA256:       strings.Repeat("c", 64),
@@ -549,7 +549,7 @@ func testRuntimeManifest(codexDigest string, codexSize int64) runtimelock.Manife
 		Artifacts: map[string]runtimelock.PlatformArtifacts{
 			runtimelock.CurrentPlatform(): {
 				Codex: runtimelock.FileArtifact{
-					Path: "bin/codex", SourceURL: "https://example.test/codex/0.146.0/" + runtime.GOOS,
+					Path: "bin/codex", SourceURL: "https://example.test/codex/0.160.1/" + runtime.GOOS,
 					SHA256: codexDigest, SizeBytes: codexSize,
 				},
 				ExternalExecutables: map[string]runtimelock.FileArtifact{},

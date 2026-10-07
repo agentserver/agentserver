@@ -728,7 +728,9 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 		// to their fixed non-root credentials before executing harness or Codex.
 		resources: document.Resources.HarnessPool, uid: 0, gid: 0, fsGroup: PoolGID,
 		capabilities: []string{"CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"},
-		strategy:     "RollingUpdate", configHash: context.harnessDeploymentHash, termination: 45,
+		// Native checkpoint upgrades are one-way. Do not allow old and new
+		// pools to claim consecutive turns concurrently during a rollout.
+		strategy: "Recreate", configHash: context.harnessDeploymentHash, termination: 45,
 	}), nil
 }
 

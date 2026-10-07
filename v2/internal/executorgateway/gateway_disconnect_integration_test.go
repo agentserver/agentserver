@@ -13,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/agentxconn"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
+	"github.com/agentserver/agentserver/v2/internal/tooloutput"
 )
 
 func TestExecutorMCPShellClosesExpiredAgentxResumeAsUnknownWithoutRedispatch(t *testing.T) {
@@ -118,11 +119,8 @@ func TestExecutorMCPShellClosesExpiredAgentxResumeAsUnknownWithoutRedispatch(t *
 		if !completedCall.result.Success || len(completedCall.result.ContentItems) != 1 {
 			t.Fatalf("unknown MCP shell result = %+v", completedCall.result)
 		}
-		var shellResult ShellV1Result
-		if err := json.Unmarshal([]byte(completedCall.result.ContentItems[0].Text), &shellResult); err != nil {
-			t.Fatal(err)
-		}
-		if shellResult.Status != "unknown" || shellResult.OutputComplete || shellResult.ExitCode != nil {
+		shellResult, _, ok := tooloutput.Parse(completedCall.result.ContentItems[0].Text)
+		if !ok || shellResult.Status != "unknown" || shellResult.OutputComplete == nil || *shellResult.OutputComplete || shellResult.ExitCode != nil {
 			t.Fatalf("agentx disconnect shell result = %+v", shellResult)
 		}
 	case <-time.After(2 * time.Second):

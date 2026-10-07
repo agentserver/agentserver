@@ -462,6 +462,9 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		})
 	assertSecretMaterialMounts(t, pool, "pool-material", loaded.Document.Secrets.HarnessPool,
 		"/var/run/agentserver/pool", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest.key"})
+	if stringField(t, objectField(t, objectField(t, pool, "spec"), "strategy"), "type") != "Recreate" {
+		t.Fatal("harness runtime upgrade must not mix old and new checkpoint writers")
+	}
 	assertSecretMaterialMounts(t, pool, "worker-material", loaded.Document.Secrets.HarnessWorker,
 		"/var/run/agentserver/worker", workerReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest-keyring.json"})
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", llmproxyComponent), "material", loaded.Document.Secrets.LLMProxy,

@@ -21,6 +21,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	checkpointartifact "github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 	"github.com/ucarion/jcs"
 )
@@ -258,8 +259,8 @@ func (manifest Manifest) Validate() error {
 		return errors.New("previousCheckpoint.catalogDigest must match executorMcp.catalogDigest")
 	}
 	if manifest.PreviousCheckpoint != nil &&
-		(!equalDigest(manifest.PreviousCheckpoint.CodexRuntimeManifestDigest, manifest.CodexRuntimeManifestDigest) ||
-			manifest.PreviousCheckpoint.CheckpointAllowlistVersion != int64(manifest.CheckpointAllowlistVersion)) {
+		!stockruntime.CanResumeCheckpoint(manifest.PreviousCheckpoint.CodexRuntimeManifestDigest, manifest.CodexRuntimeManifestDigest,
+			manifest.PreviousCheckpoint.CheckpointAllowlistVersion, int64(manifest.CheckpointAllowlistVersion)) {
 		return errors.New("previousCheckpoint runtime manifest and allowlist version must match the current run manifest")
 	}
 	if err := manifest.ToolPack.validate(); err != nil {

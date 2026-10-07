@@ -7,6 +7,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runevent"
+	"github.com/agentserver/agentserver/v2/internal/tooloutput"
 )
 
 func (state *dshSessionState) lastSeq() int64 {
@@ -253,7 +254,8 @@ func (state *dshSessionState) mapCanonical(event runevent.Event) {
 			return
 		}
 		state.emitToolCallLocked(tool, timeMS)
-		state.appendLocked("tool/result", timeMS, map[string]any{"turn": tool.turn, "step": tool.step, "message": map[string]any{"id": value.MessageID, "role": "tool", "content": []any{map[string]any{"type": "text", "text": value.Content}}, "source": map[string]any{"kind": "tool", "callId": value.ToolCallID}, "toolCallId": value.ToolCallID}})
+		content := tooloutput.Historical(tool.name, value.Content, 32*1024)
+		state.appendLocked("tool/result", timeMS, map[string]any{"turn": tool.turn, "step": tool.step, "message": map[string]any{"id": value.MessageID, "role": "tool", "content": []any{map[string]any{"type": "text", "text": content}}, "source": map[string]any{"kind": "tool", "callId": value.ToolCallID}, "toolCallId": value.ToolCallID}})
 		state.closeStepLocked(tool.turn, tool.step, timeMS)
 		delete(state.tools, value.ToolCallID)
 	case runevent.KindRunCompleted, runevent.KindRunFailed, runevent.KindRunInterrupted, runevent.KindRunCancelled:

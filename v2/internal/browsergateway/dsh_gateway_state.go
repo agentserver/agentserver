@@ -40,7 +40,7 @@ func (state *dshSessionState) terminal() bool {
 	return state.session.ActiveRunID == ""
 }
 
-func (state *dshSessionState) appendJournalPrompt(message corecontract.UserSessionTranscriptMessage) {
+func (state *dshSessionState) appendJournalPrompt(message corecontract.UserSessionTranscriptMessage, requestID string) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	turn := 1
@@ -58,7 +58,7 @@ func (state *dshSessionState) appendJournalPrompt(message corecontract.UserSessi
 	state.appendLocked("step/start", now, map[string]any{"turn": turn, "step": 1})
 	state.appendLocked("user/message", now, map[string]any{
 		"role": "user", "content": []any{map[string]any{"type": "text", "text": message.Content}},
-		"source": map[string]any{"kind": "user"}, "id": message.MessageID,
+		"source": map[string]any{"kind": "user", "rpcId": requestID}, "id": message.MessageID,
 	})
 }
 

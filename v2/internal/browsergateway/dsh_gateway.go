@@ -595,6 +595,9 @@ func (gateway *DSHGateway) prompt(ctx context.Context, bearer string, args map[s
 	if request.RequestID == "" {
 		request.RequestID = uuid.New().String()
 	}
+	if boundedIdempotency(request.RequestID) != request.RequestID {
+		return nil, false, "gateway/bad-request", "requestId must be printable ASCII of at most 256 characters", nil
+	}
 	var prompt strings.Builder
 	for _, part := range request.Content {
 		if part.Type == "text" {

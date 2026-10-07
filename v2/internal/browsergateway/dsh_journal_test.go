@@ -30,6 +30,7 @@ func (b *journalTestBackend) GetJournal(_ context.Context, _ string, workspaceID
 	page := corecontract.UserSessionJournalPage{Session: b.sessions[0], RunID: projectorRunID, AfterSeq: after}
 	page.Session.WorkspaceID = workspaceID
 	if runID == "" {
+		page.RequestID = "prompt-rpc-1"
 		page.Prompt = &corecontract.UserSessionTranscriptMessage{MessageID: "user-" + projectorRunID, RunID: projectorRunID, Role: "user", Content: "列出所有执行环境", Complete: true, CreatedAt: time.Unix(100, 0)}
 	}
 	end := len(b.events)
@@ -87,6 +88,9 @@ func TestDSHJournalLiveReplayAndReplicaSwitchKeepIdenticalCursors(t *testing.T) 
 	}
 	if cursor != 6 {
 		t.Fatalf("lost tool/terminal events: cursor=%d", cursor)
+	}
+	if live[2].Data.(map[string]any)["source"].(map[string]any)["rpcId"] != "prompt-rpc-1" {
+		t.Fatal("durable prompt did not acknowledge client submission")
 	}
 	reason := replay[len(replay)-1].Data.(map[string]any)["reason"].(map[string]any)
 	if reason["kind"] != "error" {

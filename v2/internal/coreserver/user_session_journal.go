@@ -82,6 +82,7 @@ func (commands StateStoreUserSessionCommands) GetJournal(ctx context.Context, wo
 	}
 	page := corecontract.UserSessionJournalPage{Session: contractUserSession(source.Session), RunID: source.Run.ID, AfterSeq: source.AfterSeq, HasMore: source.HasMore, Events: []runevent.Event{}}
 	if source.IncludePrompt {
+		page.RequestID = source.RequestID
 		prompt, err := commands.Prompts.ReadUserPrompt(ctx, UserPromptReadRequest{WorkspaceID: workspaceID, Pointer: source.Run.Prompt})
 		if err != nil {
 			return page, err

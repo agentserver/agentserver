@@ -13,10 +13,11 @@ func UserSessionJournalPath(workspaceID, sessionID string) string {
 // A prompt occurs exactly once, before the first event of its run. Readers must
 // drain HasMore before publishing an opening snapshot.
 type UserSessionJournalPage struct {
-	Session  UserSessionState              `json:"session"`
-	RunID    string                        `json:"runId,omitempty"`
-	Prompt   *UserSessionTranscriptMessage `json:"prompt,omitempty"`
-	Events   []runevent.Event              `json:"events"`
-	AfterSeq int64                         `json:"afterSeq"`
-	HasMore  bool                          `json:"hasMore"`
+	Session   UserSessionState              `json:"session"`
+	RunID     string                        `json:"runId,omitempty"`
+	RequestID string                        `json:"requestId,omitempty"`
+	Prompt    *UserSessionTranscriptMessage `json:"prompt,omitempty"`
+	Events    []runevent.Event              `json:"events"`
+	AfterSeq  int64                         `json:"afterSeq"`
+	HasMore   bool                          `json:"hasMore"`
 }

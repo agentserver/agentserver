@@ -28,7 +28,7 @@ func (gateway *DSHGateway) refreshJournal(ctx context.Context, bearer string, st
 			return err
 		}
 		if page.Prompt != nil {
-			state.appendJournalPrompt(*page.Prompt)
+			state.appendJournalPrompt(*page.Prompt, page.RequestID)
 		}
 		for _, event := range page.Events {
 			state.mapCanonical(event)

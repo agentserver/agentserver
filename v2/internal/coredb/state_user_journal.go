@@ -16,6 +16,7 @@ type UserSessionJournalPage struct {
 	Session       UserSession
 	Run           UserSessionTranscriptRun
 	IncludePrompt bool
+	RequestID     string
 	Events        []UserSessionTranscriptEvent
 	AfterSeq      int64
 	HasMore       bool
@@ -59,13 +60,13 @@ func (s *StateStore) ReadUserSessionJournal(ctx context.Context, workspaceID, se
 		}
 		includePrompt := runID == ""
 		for {
-			query := fmt.Sprintf(`SELECT run.id::text, run.status, launch.prompt_object_id::text, launch.prompt_sha256, launch.prompt_size, launch.prompt_media_type, run.created_at
+			query := fmt.Sprintf(`SELECT run.id::text, run.status, launch.prompt_object_id::text, launch.prompt_sha256, launch.prompt_size, launch.prompt_media_type, run.created_at, run.idempotency_key
 FROM %s run JOIN %s launch ON launch.run_id=run.id
 WHERE run.workspace_id=$1 AND run.session_id=$2 AND run.actor_id=$3
 AND ($4::text='' OR (run.created_at,run.id::text) >= ($5::timestamptz,$4::text))
 ORDER BY run.created_at,run.id LIMIT 1`, s.table("runs"), s.table("run_launch_states"))
 			var digest []byte
-			err = tx.QueryRow(ctx, query, workspaceID, sessionID, actorID, runID, anchor).Scan(&page.Run.ID, &page.Run.Status, &page.Run.Prompt.ObjectID, &digest, &page.Run.Prompt.Size, &page.Run.Prompt.MediaType, &page.Run.CreatedAt)
+			err = tx.QueryRow(ctx, query, workspaceID, sessionID, actorID, runID, anchor).Scan(&page.Run.ID, &page.Run.Status, &page.Run.Prompt.ObjectID, &digest, &page.Run.Prompt.Size, &page.Run.Prompt.MediaType, &page.Run.CreatedAt, &page.RequestID)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return page, nil
 			}

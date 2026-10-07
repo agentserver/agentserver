@@ -37,6 +37,9 @@ func TestPostgreSQLSessionJournalPagesRunsAndEnforcesCursorOwnership(t *testing.
 	if err != nil || !page.IncludePrompt || !page.HasMore || len(page.Events) != 128 || page.AfterSeq != 128 {
 		t.Fatalf("page1: count=%d seq=%d more=%t prompt=%t err=%v", len(page.Events), page.AfterSeq, page.HasMore, page.IncludePrompt, err)
 	}
+	if page.RequestID != "journal-first" {
+		t.Fatal("journal lost durable request identity")
+	}
 	page, err = store.ReadUserSessionJournal(t.Context(), workspaceID, sessionID, actorID, first.Run.ID, 128)
 	if err != nil || page.IncludePrompt || page.HasMore || len(page.Events) != 12 || page.AfterSeq != 140 {
 		t.Fatalf("page2: %+v %v", page, err)

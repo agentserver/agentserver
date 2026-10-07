@@ -23,6 +23,8 @@ type KubernetesSandboxDocument struct {
 	RuntimeTLSSecret      string               `json:"runtimeTlsSecret"`
 	RuntimeServerName     string               `json:"runtimeServerName"`
 	RuntimeClassName      string               `json:"runtimeClassName,omitempty"`
+	BubblewrapProfile     bool                 `json:"bubblewrapProfile,omitempty"`
+	RuntimeProxyURL       string               `json:"runtimeProxyUrl,omitempty"`
 	APIEgress             []EgressRuleDocument `json:"apiEgress"`
 	RuntimeExternalEgress []EgressRuleDocument `json:"runtimeExternalEgress"`
 }
@@ -66,6 +68,9 @@ func validateKubernetesManagedExecutor(m ManagedExecutorDocument, d ConfigDocume
 		return LoadedConfig{}, errors.New("Kubernetes CLI profile requires Lark and bkectl")
 	}
 	k := *m.Kubernetes
+	if k.RuntimeProxyURL != "" && k.RuntimeProxyURL != kubernetesRuntimeProxyURL(d.ClusterDomain) {
+		return LoadedConfig{}, errors.New("Kubernetes runtime proxy differs from the installed SG internal egress service")
+	}
 	if k.Namespace == d.Namespace || k.Namespace == "kube-system" || k.Scope == "" || len(k.Scope) > 63 || !dnsLabelPattern.MatchString(k.Scope) || !validDNSName(k.RuntimeServerName) {
 		return LoadedConfig{}, errors.New("Kubernetes sandbox namespace/scope/runtime identity invalid")
 	}
@@ -130,7 +135,11 @@ func validateKubernetesProfiles(d *ConfigDocument) ([]LoadedManagedSandboxProfil
 
 func kubernetesTemplateConfig(d ConfigDocument, p ManagedSandboxProfileDocument) kubernetesresources.Config {
 	k := d.Managed.Kubernetes
-	return kubernetesresources.Config{Namespace: k.Namespace, TemplateName: k.Pool, RuntimeImage: d.Images.ManagedSandbox, RuntimeTLSSecret: k.RuntimeTLSSecret, GatewayNamespace: d.Namespace, GatewayServiceAccount: p.Gateway.Component, GatewayIdentity: "spiffe://" + d.TrustDomain + "/ns/" + d.Namespace + "/sa/" + p.Gateway.Component, RuntimeClassName: k.RuntimeClassName}
+	return kubernetesresources.Config{Namespace: k.Namespace, TemplateName: k.Pool, RuntimeImage: d.Images.ManagedSandbox, RuntimeTLSSecret: k.RuntimeTLSSecret, GatewayNamespace: d.Namespace, GatewayServiceAccount: p.Gateway.Component, GatewayIdentity: "spiffe://" + d.TrustDomain + "/ns/" + d.Namespace + "/sa/" + p.Gateway.Component, RuntimeClassName: k.RuntimeClassName, BubblewrapProfile: k.BubblewrapProfile, RuntimeProxyURL: k.RuntimeProxyURL}
+}
+
+func kubernetesRuntimeProxyURL(clusterDomain string) string {
+	return "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc." + clusterDomain + ":1080"
 }
 
 func managedCredentialScopeEnvironment(m ManagedExecutorDocument) []any {
@@ -183,6 +192,9 @@ func renderKubernetesWorkloadResources(c renderContext) ([]kubeObject, error) {
 		items = append(items, kubeObject(obj))
 	}
 	egress := append(publicHTTPSEgress(), externalEgress(k.RuntimeExternalEgress)...)
+	if k.RuntimeProxyURL != "" {
+		egress = append(egress, kubeObject{"to": []any{kubeObject{"namespaceSelector": kubeObject{"matchLabels": kubeObject{"kubernetes.io/metadata.name": "ssh-egress"}}, "podSelector": kubeObject{"matchLabels": kubeObject{"app": "ssh-egress-merlin-i18nbd-syd2a-83092"}}}}, "ports": []any{kubeObject{"protocol": "TCP", "port": 1080}}})
+	}
 	items = append(items, kubeObject{"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubeObject{"name": "sandbox-cli-egress", "namespace": k.Namespace}, "spec": kubeObject{"podSelector": kubeObject{"matchLabels": kubeObject{"app.kubernetes.io/name": "agentserver-sandbox-runtime"}}, "policyTypes": []any{"Egress"}, "egress": egress}})
 	return items, nil
 }

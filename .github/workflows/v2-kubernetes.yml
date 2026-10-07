@@ -66,7 +66,7 @@ jobs:
           run-id: 37485877306
           name: agentserver-v2-production-53e4f7f19848601fc6098579574c26ef1dd93594
           path: ${{ runner.temp }}/kubernetes-base
-      - name: Build and publish independent Kubernetes images
+      - name: Build and publish Kubernetes services and profile installer
         env:
           RELEASE_TAG: k8s-${{ github.sha }}
           RELEASE_DIRECTORY: ${{ runner.temp }}/kubernetes-release

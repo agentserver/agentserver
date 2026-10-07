@@ -43,6 +43,8 @@ func kubernetesConfigDocument() ConfigDocument {
 	d.Managed.Environment.Root.DisplayName = "Managed SG Kubernetes"
 	d.Managed.Environment.Root.Description = "Default container runtime; managed workspace"
 	d.Managed.Kubernetes = &KubernetesSandboxDocument{Namespace: "agentserver-sandboxes", Pool: "managed-cli-v1", Scope: "sg-managed-cli", GatewayImage: "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-k8s-gateway:canary", RuntimeTLSSecret: "agentserver-runtime-tls", RuntimeServerName: "sandbox-runtime.agentserver.internal", APIEgress: []EgressRuleDocument{{CIDR: "10.251.224.152/32", Ports: []uint16{6443}}}, RuntimeExternalEgress: []EgressRuleDocument{}}
+	d.Managed.Kubernetes.BubblewrapProfile = true
+	d.Managed.Kubernetes.RuntimeProxyURL = kubernetesRuntimeProxyURL(d.ClusterDomain)
 	d.SandboxRegions = ManagedSandboxRegionsDocument{DefaultRegion: "sg", Regions: []string{"sg"}}
 	d.ProxyProfiles = []ManagedSandboxProxyProfileDocument{}
 	d.SandboxProfiles = []ManagedSandboxProfileDocument{{Region: "sg", Environment: d.Managed.Environment, Gateway: ManagedSandboxGatewayDocument{Component: "sandbox-gateway-k8s", ClusterIP: d.Services.SandboxGateway.ClusterIP, Port: 8443, ServerName: "sandbox-gateway-k8s.agentserver.internal", Secret: "agentserver-sandbox-k8s-secrets"}, SandboxExternalEgress: []EgressRuleDocument{}}}
@@ -90,6 +92,15 @@ func TestKubernetesChartRendersExecutableGraphWithoutTAE(t *testing.T) {
 	}
 	if pod["automountServiceAccountToken"] != false {
 		t.Fatal("sandbox received Kubernetes token")
+	}
+	rawPod, _ := json.Marshal(pod)
+	if !strings.Contains(string(rawPod), "AGENTSERVER_SANDBOX_HTTP_PROXY") || !strings.Contains(string(rawPod), d.Managed.Kubernetes.RuntimeProxyURL) {
+		t.Fatal("runtime internal egress missing")
+	}
+	policy := findResource(t, foundation, "NetworkPolicy", "sandbox-cli-egress")
+	rawPolicy, _ := json.Marshal(policy)
+	if !strings.Contains(string(rawPolicy), "ssh-egress-merlin-i18nbd-syd2a-83092") {
+		t.Fatal("runtime proxy has no narrow egress rule")
 	}
 	for _, name := range []string{helmRuntimeManifestFile, helmFoundationManifestFile} {
 		data, _ := chart.File(name)

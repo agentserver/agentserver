@@ -15,6 +15,21 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 )
 
+func TestRuntimeProxyCannotBeOverriddenByCommand(t *testing.T) {
+	c := Config{Workspace: t.TempDir(), ProxyURL: "socks5h://proxy.example:1080"}
+	r := sandboxcontract.RunCommandRequest{Executable: "bkectl", WorkingDirectory: c.Workspace, WorkspaceAccess: "read"}
+	args, err := sandboxArguments(c, r)
+	if err != nil || !strings.Contains(strings.Join(args, "\x00"), "HTTPS_PROXY\x00"+c.ProxyURL) {
+		t.Fatalf("proxy projection: %v %v", args, err)
+	}
+	for _, key := range []string{"HTTPS_PROXY", "http_proxy", "NO_PROXY", "all_proxy"} {
+		r.Environment = map[string]string{key: "attacker.example"}
+		if _, err := sandboxArguments(c, r); err == nil {
+			t.Fatalf("command overrode proxy with %s", key)
+		}
+	}
+}
+
 func liveConfig(t *testing.T) Config {
 	t.Helper()
 	bwrap := os.Getenv("AGENTSERVER_K8S_RUNTIME_LIVE_BWRAP")

@@ -1,7 +1,9 @@
 # Kubernetes Agent Sandbox provider (implementation in progress)
 
 This module is **not yet a deployable replacement for TAE**. No production
-configuration has been switched. Lifecycle, runtime, gateway entry point,
+AgentServer release has been switched. SG controller/CRDs, namespace, quota
+and runtime TLS were installed through targeted Pulumi updates on 2026-10-07.
+Lifecycle, runtime, gateway entry point,
 Core/Gateway credential dispatch, production Chart and independent image
 publication are implemented; SG runtime qualification and rollout remain.
 
@@ -76,8 +78,13 @@ filesystem access enforcement is implemented and tested on the chosen runtime.
    non-root, capability-free probe on `n251-224-152` failed with bubblewrap's
    "No permissions to create a new namespace". A read-only diagnostic found
    `kernel.unprivileged_userns_clone=1`, `user.max_user_namespaces=1031465`
-   and seccomp filter mode enabled. Do not substitute privileged or unconfined
-   execution; a scoped host seccomp profile requires operator approval.
+   and seccomp filter mode enabled. The active AppArmor profile was also the
+   containerd default, whose source denies mount. The operator selected
+   bubblewrap and explicitly approved one-time root/MAC_ADMIN profile loading,
+   with Unconfined AppArmor only for that bounded installer. Runtime Pods remain
+   non-root, drop all capabilities and use named Localhost profiles. The
+   dedicated profile omits ptrace/process_vm/chroot and keeps default-deny.
+   It must be verified on one SG node before labeling any node eligible.
 3. Publish images and complete Pulumi/Helm assembly, including controller,
    namespace, quota, admission constraints, TLS and egress configuration.
 4. SG canary: list environments through the real executor, run bkectl/Lark with
@@ -92,7 +99,8 @@ profiles require new environment IDs. No fallback to TAE or AgentX is permitted.
 ## Publication
 
 `.github/workflows/v2-kubernetes.yml` runs on the `k8s-sg` runner and publishes
-four images plus an environment-specific Chart. It does not apply the Chart.
+five images (including the node profile installer) plus an environment-specific
+Chart. It does not apply the Chart.
 `publish-kubernetes-images.sh` rebuilds Core/gateways/harness pool/worker/init;
 the stock Codex bundle and unchanged final-exec binary come from the last
 published harness, with matching deployment metadata. bkectl and lark-cli are

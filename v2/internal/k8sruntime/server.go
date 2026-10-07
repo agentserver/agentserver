@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,7 @@ type Config struct {
 	GatewayIdentity string
 	Workspace       string
 	Bwrap           string
+	ProxyURL        string
 }
 
 type Server struct {
@@ -71,6 +73,12 @@ type process struct {
 }
 
 func New(config Config) (*Server, error) {
+	if config.ProxyURL != "" {
+		u, err := url.Parse(config.ProxyURL)
+		if err != nil || u.Scheme != "socks5h" || u.Hostname() == "" || u.Port() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(config.ProxyURL, "\x00\r\n") {
+			return nil, errors.New("runtime proxy must be an operator-configured SOCKS5 DNS endpoint without credentials")
+		}
+	}
 	if config.PodUID == "" || len(config.PodUID) > 128 || strings.ContainsAny(config.PodUID, "\x00\r\n") || !strings.HasPrefix(config.GatewayIdentity, "spiffe://") {
 		return nil, errors.New("runtime Pod UID and gateway identity are required")
 	}

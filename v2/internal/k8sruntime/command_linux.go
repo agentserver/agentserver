@@ -89,12 +89,17 @@ func sandboxArguments(c Config, r sandboxcontract.RunCommandRequest) ([]string, 
 	}
 	args = append(args, bind, c.Workspace, c.Workspace, "--chdir", r.WorkingDirectory,
 		"--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", "/tmp", "--setenv", "LANG", "C.UTF-8")
+	if c.ProxyURL != "" {
+		for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
+			args = append(args, "--setenv", key, c.ProxyURL)
+		}
+	}
 	keys := make([]string, 0, len(r.Environment))
 	for k := range r.Environment {
 		if k == "PATH" && r.Environment[k] == "/usr/local/bin:/usr/bin:/bin" {
 			continue
 		}
-		if k == "PATH" || k == "HOME" || k == "TMPDIR" || k == "ENV" || k == "BASH_ENV" || strings.HasPrefix(k, "LD_") {
+		if k == "PATH" || k == "HOME" || k == "TMPDIR" || k == "ENV" || k == "BASH_ENV" || strings.HasPrefix(k, "LD_") || (c.ProxyURL != "" && strings.HasSuffix(strings.ToUpper(k), "_PROXY")) {
 			return nil, errors.New("reserved runtime environment")
 		}
 		keys = append(keys, k)

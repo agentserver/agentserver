@@ -24,7 +24,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	gateway := os.Getenv("AGENTSERVER_SANDBOX_GATEWAY_IDENTITY")
-	app, err := k8sruntime.New(k8sruntime.Config{PodUID: os.Getenv("AGENTSERVER_SANDBOX_POD_UID"), GatewayIdentity: gateway, Workspace: "/workspace", Bwrap: "/usr/local/bin/bwrap"})
+	app, err := k8sruntime.New(k8sruntime.Config{PodUID: os.Getenv("AGENTSERVER_SANDBOX_POD_UID"), GatewayIdentity: gateway, Workspace: "/workspace", Bwrap: "/usr/local/bin/bwrap", ProxyURL: os.Getenv("AGENTSERVER_SANDBOX_HTTP_PROXY")})
 	if err != nil {
 		return err
 	}

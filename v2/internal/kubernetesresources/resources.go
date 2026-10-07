@@ -10,6 +10,12 @@ import (
 
 const ControllerVersion = "v1.0.5"
 
+const (
+	BubblewrapSeccompProfile  = "agentserver/bwrap-v1.json"
+	BubblewrapAppArmorProfile = "agentserver-bwrap-v1"
+	BubblewrapNodeLabel       = "agentserver.byted.bps.dev/bwrap-profile"
+)
+
 var dnsLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 var dnsName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$`)
 
@@ -23,7 +29,9 @@ type Config struct {
 	GatewayIdentity       string
 	// Empty intentionally omits runtimeClassName (the cluster default). It
 	// does NOT create a RuntimeClass called "default" or claim VM isolation.
-	RuntimeClassName string
+	RuntimeClassName  string
+	BubblewrapProfile bool
+	RuntimeProxyURL   string
 }
 
 func Resources(c Config) ([]map[string]any, error) {
@@ -34,6 +42,12 @@ func Resources(c Config) ([]map[string]any, error) {
 	}
 	if c.RuntimeImage == "" || strings.ContainsAny(c.RuntimeImage, " \t\r\n\x00") {
 		return nil, errors.New("runtime image must be explicitly configured")
+	}
+	if c.RuntimeProxyURL != "" {
+		u, err := url.Parse(c.RuntimeProxyURL)
+		if err != nil || u.Scheme != "socks5h" || !dnsName.MatchString(u.Hostname()) || u.Port() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return nil, errors.New("invalid runtime SOCKS5 proxy")
+		}
 	}
 	identity, err := url.Parse(c.GatewayIdentity)
 	if err != nil || identity.Scheme != "spiffe" || identity.Host == "" || identity.Path != "/ns/"+c.GatewayNamespace+"/sa/"+c.GatewayServiceAccount || identity.RawQuery != "" || identity.Fragment != "" || identity.User != nil {
@@ -62,6 +76,16 @@ func Resources(c Config) ([]map[string]any, error) {
 	}
 	if c.RuntimeClassName != "" {
 		spec["runtimeClassName"] = c.RuntimeClassName
+	}
+	if c.RuntimeProxyURL != "" {
+		container := spec["containers"].([]any)[0].(map[string]any)
+		container["env"] = append(container["env"].([]any), map[string]any{"name": "AGENTSERVER_SANDBOX_HTTP_PROXY", "value": c.RuntimeProxyURL})
+	}
+	if c.BubblewrapProfile {
+		security := spec["securityContext"].(map[string]any)
+		security["seccompProfile"] = map[string]any{"type": "Localhost", "localhostProfile": BubblewrapSeccompProfile}
+		security["appArmorProfile"] = map[string]any{"type": "Localhost", "localhostProfile": BubblewrapAppArmorProfile}
+		spec["nodeSelector"].(map[string]any)[BubblewrapNodeLabel] = "v1"
 	}
 	obj := func(api, kind, name string, body map[string]any) map[string]any {
 		body["apiVersion"] = api

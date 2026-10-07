@@ -38,6 +38,18 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: v3.18.4
+      - name: Configure private Go dependency read access
+        env:
+          CODE_BYTED_USERNAME: ${{ secrets.CODE_BYTED_USERNAME }}
+          CODE_BYTED_TOKEN: ${{ secrets.CODE_BYTED_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$CODE_BYTED_USERNAME" && test -n "$CODE_BYTED_TOKEN"
+          umask 077
+          git config --global credential.helper "store --file=${RUNNER_TEMP}/kubernetes-code-byted.credentials"
+          printf 'protocol=https\nhost=code.byted.org\nusername=%s\npassword=%s\n\n' \
+            "$CODE_BYTED_USERNAME" "$CODE_BYTED_TOKEN" | git credential approve
+          printf '%s\n' 'GIT_TERMINAL_PROMPT=0' 'GOPRIVATE=code.byted.org' 'GONOSUMDB=code.byted.org' >>"$GITHUB_ENV"
       - name: Test services and Kubernetes provider
         run: |
           go -C v2 test ./...
@@ -82,3 +94,8 @@ jobs:
             ${{ runner.temp }}/kubernetes-release/production.json
             ${{ runner.temp }}/kubernetes-release/*.tgz
           if-no-files-found: error
+      - name: Remove temporary dependency credential
+        if: always()
+        run: |
+          git credential reject <<<'url=https://code.byted.org'
+          git config --global --unset credential.helper || true

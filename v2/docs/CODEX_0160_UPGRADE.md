@@ -1,5 +1,18 @@
 # Stock Codex 0.160.1 upgrade
 
+SG deployed on 2026-10-07, Helm revision 163, chart
+`0.1.0-config.d1af48350c9e6`, application source `95df94fb` and successful
+GHCR publication run `37643547331`. Both live Harness replicas report
+`codex-cli 0.160.1`; all Deployments are Ready. The database remains at schema
+35 and retains all 103 pre-upgrade checkpoints. Public DSH and platform pages
+are available. Logged-in real-model conversation acceptance still requires a
+user message; readiness is not a substitute for that check.
+
+The first publication runner was evicted for node ephemeral-storage pressure,
+not OOM. The retry reused the completed frontend artifact from run
+`37640754326`, removed its disposable test/build caches before Docker packaging,
+and succeeded on another SG node. No shared node resources were deleted.
+
 The Harness now packages official stable Codex 0.160.1 (upstream commit
 `d27764b82f7118f674371e6d6e76271d9d606edb`). This is a runtime upgrade, not a
 model migration: workspace/session model selections remain unchanged.

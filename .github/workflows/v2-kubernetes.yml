@@ -160,6 +160,7 @@ jobs:
         if: ${{ inputs.chart_only || contains(github.event.head_commit.message, '[k8s chart]') }}
         env:
           REPAIRED_GATEWAY_IMAGE: ${{ needs.gateway-probe-repair.outputs.image }}
+          STAGE_SERVICE: ${{ contains(github.event.head_commit.message, '[k8s stage-service]') }}
         run: |
           set -euo pipefail
           release_dir="${RUNNER_TEMP}/kubernetes-release"
@@ -170,6 +171,9 @@ jobs:
           done
           if [ -n "$REPAIRED_GATEWAY_IMAGE" ]; then
             printf '%s\n' "$REPAIRED_GATEWAY_IMAGE" >"$release_dir/k8s-gateway.image"
+          fi
+          if [ "$STAGE_SERVICE" = true ]; then
+            jq -er '.previousHarnessImage' v2/deploy/production/kubernetes-published-images.json >"$release_dir/harness.image"
           fi
       - name: Prepare active chart (does not deploy it)
         run: |

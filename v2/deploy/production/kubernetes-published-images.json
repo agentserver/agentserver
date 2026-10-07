@@ -2,11 +2,14 @@
   "sourceRevision": "0ef107e43d023d97276802a7e35be07ca2797972",
   "workflowRun": 37566451939,
   "gatewayRepairRun": 37572899447,
-  "serviceRepairRevision": "7a2562537bd4be8b9409fdd5b5ee7fe411c810cd",
-  "serviceRepairRun": 37602087037,
+  "serviceRepairRevision": "55224f2c14817026354dc812832c7b631b9a0cf0",
+  "serviceRepairRun": 37617346414,
+  "harnessRepairRevision": "55224f2c14817026354dc812832c7b631b9a0cf0",
+  "harnessRepairRun": 37617346414,
+  "previousHarnessImage": "ghcr.io/agentserver/v2-harness@sha256:76fab81aa98416a35d91d1b64b6ecc6468c59d6174564761698c8840f1576772",
   "images": {
-    "service": "ghcr.io/agentserver/v2-service@sha256:e148b55eb11901ce0bd93b270034ca83b98dfd1b0dcce41e44f6a81336bfd634",
-    "harness": "ghcr.io/agentserver/v2-harness@sha256:76fab81aa98416a35d91d1b64b6ecc6468c59d6174564761698c8840f1576772",
+    "service": "ghcr.io/agentserver/v2-service@sha256:ab62fc5f5e53f61d78789a35df95211a90fb142e44e54b78b17235b95926543f",
+    "harness": "ghcr.io/agentserver/v2-harness@sha256:2be9e1a114c615f5004e1f557d40e15d42e72ce40e28379ece11b9391cd705c9",
     "k8s-runtime": "ghcr.io/agentserver/v2-k8s-runtime@sha256:864242f86a62b6efa6b3c550d32d5e9ad40301792bc895be0069969b17275074",
     "k8s-gateway": "ghcr.io/agentserver/v2-k8s-gateway@sha256:499ff91f1768d95bf86fd4ecac367ffe767523e43270b6959eab84f15999e683",
     "k8s-profile-installer": "ghcr.io/agentserver/v2-k8s-profile-installer@sha256:983a1b17c282642ada778c3f9488f83a4d621c629a252c48b3823c88fa745f74"

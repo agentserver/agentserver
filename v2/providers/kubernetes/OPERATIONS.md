@@ -148,3 +148,10 @@ and commands are not automatically replayed.
 `credential_unauthorized` does not prove AK/SK is invalid. First check the
 environment-to-scope mapping against the sandbox reservation and live operation
 authority; do not ask the user to re-enter credentials solely on that error.
+
+The scope/error-reporting repair was deployed on 2026-10-08 as Helm revision
+167, Chart `0.1.0-config.d5eac249f9cd7`, publication run `37725949914` attempt 2.
+Migration 0037, both scope mappings, all workload readiness, DSH HTTP 200 and the
+workspace's retained CN selection were verified. PostgreSQL regressions passed
+in CI. A fresh authenticated credentialed CN query is still required for final
+product-path acceptance; readiness and CLI version alone do not establish it.

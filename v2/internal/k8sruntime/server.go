@@ -304,11 +304,18 @@ func (s *stream) frame(f sandboxcontract.OperationFrame) error {
 	f.Profile = sandboxcontract.ProfileV1
 	f.Identity = s.id
 	f.Ref = s.ref
-	_ = http.NewResponseController(s.w).SetWriteDeadline(time.Now().Add(15 * time.Second))
+	controller := http.NewResponseController(s.w)
+	if err := controller.SetWriteDeadline(time.Now().Add(15 * time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	// Bound only Encode/Flush, not the time until the process next emits output.
+	// HTTP/2 actively resets the stream when this deadline expires, even while
+	// no write is in progress. Leaving it armed after ACK kills quiet commands.
+	defer controller.SetWriteDeadline(time.Time{})
 	if err := json.NewEncoder(s.w).Encode(f); err != nil {
 		return err
 	}
-	return http.NewResponseController(s.w).Flush()
+	return controller.Flush()
 }
 func (s *stream) ack(handle string) error {
 	return s.frame(sandboxcontract.OperationFrame{Type: sandboxcontract.OperationFrameAcknowledgement, Acknowledgement: &executionbackend.Acknowledgement{ProviderOperationID: handle, AcceptedAt: time.Now().UTC()}})

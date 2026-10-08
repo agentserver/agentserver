@@ -6,9 +6,9 @@ on:
     inputs:
       application_repair:
         type: choice
-        options: [all, service, harness]
+        options: [all, service, harness, runtime]
         default: all
-        description: Rebuild application images while keeping qualified sandbox infrastructure
+        description: Rebuild selected images while retaining the other published components
       frontend_run_id:
         type: string
         default: ''
@@ -68,7 +68,7 @@ jobs:
           done
           printf 'image=%s\n' "$(docker inspect --format '{{index .RepoDigests 0}}' "$image")" >>"$GITHUB_OUTPUT"
   node-profile-installer:
-    if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && inputs.application_repair != 'service' && !contains(github.event.head_commit.message, '[k8s service]') && inputs.application_repair != 'harness' && !contains(github.event.head_commit.message, '[k8s harness]') }}
+    if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && inputs.application_repair != 'runtime' && inputs.application_repair != 'service' && !contains(github.event.head_commit.message, '[k8s service]') && inputs.application_repair != 'harness' && !contains(github.event.head_commit.message, '[k8s harness]') }}
     runs-on: k8s-sg
     timeout-minutes: 15
     steps:
@@ -149,6 +149,9 @@ jobs:
       - name: Test chart-only changes
         if: ${{ inputs.chart_only || contains(github.event.head_commit.message, '[k8s chart]') }}
         run: go -C v2 test ./internal/productiondeploy
+      - name: Verify quiet runtime commands survive the real HTTP2 write deadline
+        if: ${{ inputs.application_repair == 'runtime' }}
+        run: AGENTSERVER_RUN_RUNTIME_STREAM_TESTS=1 go -C v2 test ./internal/k8sruntime -run TestStreamWriteDeadlineDoesNotExpireBetweenFrames -count=1 -timeout=1m -v
       - name: Verify managed credential and pre-dispatch state transitions with PostgreSQL
         if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
         run: |
@@ -166,7 +169,7 @@ jobs:
           go -C v2 test ./internal/coredb -count=1 \
             -run 'TestPostgreSQL(ManagedNotSentFailure|KubernetesByteCloudCredentialUsesProcessEnvironment|ByteCloudCredentialUsesProcessEnvironmentIndependentOfLarkMode|ExecutionCrashAfterDispatchCommitDoesNotAuthorizeReplay)'
       - name: Exercise stock Codex and previous-session upgrade on native Linux
-        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && inputs.application_repair != 'service' && !contains(github.event.head_commit.message, '[k8s service]') }}
+        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && inputs.application_repair != 'runtime' && inputs.application_repair != 'service' && !contains(github.event.head_commit.message, '[k8s service]') }}
         run: |
           set -euo pipefail
           runtime_dir="${RUNNER_TEMP}/codex-current-runtime"
@@ -195,7 +198,7 @@ jobs:
         if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
         run: go -C v2 clean -cache
       - name: Build and publish Kubernetes services and profile installer
-        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && inputs.application_repair != 'service' && !contains(github.event.head_commit.message, '[k8s service]') && inputs.application_repair != 'harness' && !contains(github.event.head_commit.message, '[k8s harness]') }}
+        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && inputs.application_repair != 'runtime' && inputs.application_repair != 'service' && !contains(github.event.head_commit.message, '[k8s service]') && inputs.application_repair != 'harness' && !contains(github.event.head_commit.message, '[k8s harness]') }}
         env:
           RELEASE_TAG: k8s-${{ github.sha }}
           RELEASE_DIRECTORY: ${{ runner.temp }}/kubernetes-release
@@ -207,6 +210,12 @@ jobs:
           PUBLISH_HARNESS: ${{ inputs.application_repair == 'harness' || contains(github.event.head_commit.message, '[k8s harness]') }}
           CLEAN_BUILD_CACHE: 'true'
         run: bash v2/deploy/production/publish-kubernetes-service.sh
+      - name: Publish runtime stream repair with qualified CLI and application images unchanged
+        if: ${{ inputs.application_repair == 'runtime' }}
+        env:
+          RELEASE_DIRECTORY: ${{ runner.temp }}/kubernetes-release
+          CLEAN_BUILD_CACHE: 'true'
+        run: bash v2/deploy/production/publish-kubernetes-runtime.sh
       - name: Reuse published images without rebuilding application binaries
         if: ${{ inputs.chart_only || contains(github.event.head_commit.message, '[k8s chart]') }}
         env:

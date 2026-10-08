@@ -1,4 +1,4 @@
-# SG managed CLI sandbox operations
+# SG/CN managed CLI sandbox operations
 
 The operator selected **bubblewrap** and the **default RuntimeClass**. The
 template omits `runtimeClassName`; it does not install Kata or gVisor.
@@ -78,6 +78,32 @@ never use a full-stack update or `--target-dependents` for this release.
 
 ## Acceptance
 
+### Regional credential authority
+
+Core and executor consume the same deployment-owned
+`AGENTSERVER_V2_MANAGED_CREDENTIAL_SCOPE_BINDINGS` JSON array. Each environment
+has exactly one scope; an unknown environment fails closed without falling back
+to SG. The existing `taePsm`/`provider_psm` wire/database names carry this provider
+scope, not an actual TAE PSM:
+
+| Environment | Scope | Gateway |
+| --- | --- | --- |
+| SG `4e0e31cf-a8c9-4ef9-8197-71be586532df` | `sg-managed-cli` | SG in-cluster mTLS |
+| CN `73cd7602-c0be-4d9a-96a9-d0c09bf6f689` | `cn-managed-cli` | `https://sandbox-gateway-cn.byted.bps.dev` |
+
+Scope is part of immutable sandbox reservation identity. Do not append a region
+suffix or rename an existing reservation. Core still checks the exact live
+workspace/session/run/operation/environment/sandbox generation, credential
+version and stored provider scope before materializing a credential. A successful
+`bkectl --json version` alone is not a credential test: discovery commands bypass
+credential injection. Acceptance also needs a real credentialed read-only query.
+
+CN uses ordinary cross-cluster HTTPS plus application authentication and signed
+capabilities; runtime mTLS remains inside CN. The operator explicitly chose no
+CN namespace NetworkPolicies for this rollout. SG's policies are unchanged.
+
+### Product-path verification
+
 Check migrations and managed-environment bootstrap, Ready deployments, SG
 workspace defaults and registered backend kind `k8s`. Then use a genuine
 authenticated user session to enumerate environments and run the CLI through
@@ -111,6 +137,14 @@ Managed bkectl needs a default ByteCloud **AK/SK** binding. A retained legacy
 delivery mode. The Platform credentials page offers a password-masked AK/SK
 form; values go only into the authenticated HTTPS create request and Core's
 sealed storage, never browser storage or chat. Creating a new default retains
-the old binding. `bytecloud_aksk_required` means no process was dispatched;
-the unacknowledged operation retains its conservative ledger status, but output
-is not reported as missing and no subprocess exit code is invented.
+the old binding. `bytecloud_aksk_required` means no process was dispatched.
+Migration 0037 records explicit `dispatch_not_sent` evidence: a managed shell
+environment-injection failure closes as `failed`, with `dispatch_outcome=not_sent`
+and a safe reason code. It has no backend acknowledgement or subprocess exit
+code. DSH/model text explains that the command never started. Unknown/ambiguous
+post-dispatch outcomes still remain `unknown`; historical results are not rewritten
+and commands are not automatically replayed.
+
+`credential_unauthorized` does not prove AK/SK is invalid. First check the
+environment-to-scope mapping against the sandbox reservation and live operation
+authority; do not ask the user to re-enter credentials solely on that error.

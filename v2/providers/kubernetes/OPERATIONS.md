@@ -219,3 +219,37 @@ old cutoff with a shortened bound, verify cancellation and forbid automatic
 tool-call replay (`AGENTSERVER_RUN_LONG_MCP_TESTS=1`). Runner-only tool transport
 timeouts are reported as `tool_transport_timeout` / worker execution failure,
 not a model timeout or a cleanup failure when cleanup actually succeeded.
+
+Both changes were deployed on 2026-10-08 as revision 171, Chart
+`0.1.0-config.d60f184367834`, publication run `37745479080`. Full service/provider,
+31-second MCP, PostgreSQL and native stock Codex regressions passed. All workloads
+were Ready, and both SG/CN sandbox namespaces contained zero NetworkPolicies or
+CiliumNetworkPolicies. The old SG runtime policy removal is a Helm-owned,
+versioned configuration change; control-plane policies were retained.
+
+### Direct bkectl diagnostic (2026-10-08)
+
+The user explicitly authorized one credentialed, read-only `kubectl exec` test:
+`bkectl k8s pod observe --name dp-19a21c185f-556d96c944-56hwj --region i18nbd --json`.
+A CN sandbox from the live template first returned `auth.credentials: not logged
+in` without process credentials. With the workspace's saved AK/SK injected only
+into the diagnostic process (`BKECTL_AUTH_MODE=app_only`), it ran for 30.367s,
+exited 1 and returned observation status `unknown`: source `cache` timed out
+waiting for HTTP headers from `http://tce-status-nontt.byted.org/api/v1/pods/name`.
+No current identity/Pod facts were obtained. This was a completed CLI failure,
+not the outer 120-second diagnostic deadline.
+
+Credential-free checks from that sandbox established TCP connections to the same
+host on both 80 and 443, but an HTTP request on port 80 received no response header
+within 8s. This does not establish that the Pod is unhealthy; the remaining issue
+is the TCE-status HTTP service/access path from CN. Removing the worker's outer
+30-second cutoff exposes this real CLI error instead of masking it.
+
+The diagnostic used a short-lived, ingress-denied reader Pod with only the
+credential-sealing file, a database Secret reference and PostgreSQL/DNS egress.
+Its hard-scoped helper handed credentials to the sandbox encrypted for an
+ephemeral in-memory key, never as plaintext tool output or credential files.
+The temporary reader, its policy, sandbox claims and diagnostic executables were
+removed. No workspace binding was edited and normal Core live-authority checks
+were not modified. Direct exec is diagnostic evidence, not a substitute for the
+authenticated product execution path.

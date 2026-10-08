@@ -41,6 +41,23 @@ func TestPostgreSQLKubernetesCutoverAuditsRegionsOnce(t *testing.T) {
 			t.Fatalf("non-idempotent region cutover: %s %d %d", region, version, events)
 		}
 	}
+	// Once CN is installed, a subsequent deployment must preserve the owner's
+	// regional choice rather than silently moving it back to SG.
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf(`UPDATE %s.workspace_managed_sandbox_settings SET region='cn' WHERE workspace_id=$1`, q), other.Run.WorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	profile.RetainedWorkspaceRegions = []string{"cn", "sg"}
+	if _, err := bootstrapManagedEnvironmentProfileConfig(t.Context(), pool.Config().ConnConfig, schema, profile); err != nil {
+		t.Fatal(err)
+	}
+	var region string
+	var version int
+	if err := pool.QueryRow(t.Context(), fmt.Sprintf(`SELECT region,version FROM %s.workspace_managed_sandbox_settings WHERE workspace_id=$1`, q), other.Run.WorkspaceID).Scan(&region, &version); err != nil {
+		t.Fatal(err)
+	}
+	if region != "cn" || version != 2 {
+		t.Fatalf("upgrade erased regional choice: %s v%d", region, version)
+	}
 }
 
 func TestKubernetesDispatchTargetPreservesProvider(t *testing.T) {

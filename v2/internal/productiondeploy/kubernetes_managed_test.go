@@ -2,11 +2,15 @@ package productiondeploy
 
 import (
 	"encoding/json"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -189,6 +193,67 @@ func TestKubernetesProductionSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProductionSchemaAccepts(t, resolved, raw)
+}
+
+func TestCNRenderedControlPlaneGraph(t *testing.T) {
+	d := kubernetesConfigDocument()
+	cn := d.SandboxProfiles[0]
+	cn.Region = "cn"
+	cn.Environment.EnvironmentID = "bbbbbbbb-1111-4444-8888-111111111111"
+	cn.Environment.Root.DisplayName = "CN · Kubernetes"
+	cn.Gateway = ManagedSandboxGatewayDocument{Component: "sandbox-gateway-cn-k8s", Port: 8443, ServerName: ProductionCNSandboxGatewayBackendHost, Secret: "agentserver-sandbox-cn-k8s-secrets", External: true, ExternalURL: "https://" + ProductionCNSandboxGatewayHostname}
+	// Exercise CN-first ordering, which previously selected CN for SG runtime
+	// resources and created an empty local host alias.
+	d.SandboxProfiles = append([]ManagedSandboxProfileDocument{cn}, d.SandboxProfiles...)
+	d.SandboxRegions.Regions = []string{"cn", "sg"}
+	loaded, err := ValidateConfig(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Render(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundation := parseKubernetesList(t, mustBundleFile(t, bundle, foundationFile))
+	runtime := parseKubernetesList(t, mustBundleFile(t, bundle, runtimeFile))
+	if findResourceOptional(runtime, "Deployment", cn.Gateway.Component) != nil || findResourceOptional(foundation, "Service", cn.Gateway.Component) != nil {
+		t.Fatal("external CN gateway was rendered locally in SG")
+	}
+	pod := objectField(t, objectField(t, objectField(t, findResource(t, runtime, "Deployment", executorComponent), "spec"), "template"), "spec")
+	for _, entry := range pod["hostAliases"].([]any) {
+		if _, err := netip.ParseAddr(entry.(map[string]any)["ip"].(string)); err != nil {
+			t.Fatal("executor has invalid host alias", entry)
+		}
+	}
+	findResource(t, foundation, "CiliumNetworkPolicy", "executor-cn-gateway-egress")
+	route := objectField(t, findResource(t, foundation, "HTTPRoute", "agentserver-core-external"), "spec")
+	rule := objectArrayFirst(t, route, "rules")
+	paths := map[string]string{}
+	for _, entry := range rule["matches"].([]any) {
+		p := objectField(t, entry.(map[string]any), "path")
+		paths[p["value"].(string)] = p["type"].(string)
+	}
+	for _, p := range []string{corecontract.ReserveManagedSandboxPath, corecontract.ListManagedSandboxesForReconcilePath, corecontract.AuthorizeManagedSandboxOperationPath} {
+		if paths[p] != "Exact" {
+			t.Fatalf("Core external route missing %s", p)
+		}
+	}
+	if paths[corecontract.ManagedSandboxPathPrefix] != "PathPrefix" {
+		t.Fatal("sandbox lifecycle prefix missing")
+	}
+	for _, p := range loaded.ManagedSandboxProfiles {
+		raw, err := renderManagedEnvironmentBootstrapJSON(loaded, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var bootstrap managedEnvironmentBootstrapJSON
+		if err := json.Unmarshal(raw, &bootstrap); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(bootstrap.RetainedWorkspaceRegions, []string{"cn", "sg"}) {
+			t.Fatal("upgrade would erase CN selection")
+		}
+	}
 }
 
 func TestKubernetesCNExternalProfileSchema(t *testing.T) {

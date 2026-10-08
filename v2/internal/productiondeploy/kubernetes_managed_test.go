@@ -30,6 +30,9 @@ func TestKubernetesReleaseCutover(t *testing.T) {
 	if !got.Document.Managed.Kubernetes.AllWorkspaces || got.Document.Managed.Kubernetes.RuntimeClassName != "" {
 		t.Fatal("cutover defaults changed")
 	}
+	if !got.Document.Managed.Kubernetes.UnrestrictedNetwork {
+		t.Fatal("release must preserve the operator's unrestricted sandbox network choice")
+	}
 	if got.Document.Runtime.FinalExecSHA256 != base.Document.Runtime.FinalExecSHA256 || got.Document.OAuth != base.Document.OAuth {
 		t.Fatal("cutover changed runtime/OAuth")
 	}
@@ -50,6 +53,7 @@ func kubernetesConfigDocument() ConfigDocument {
 	d.Managed.Environment.Root.Description = "Default container runtime; managed workspace"
 	d.Managed.Kubernetes = &KubernetesSandboxDocument{Namespace: "agentserver-sandboxes", Pool: "managed-cli-v1", Scope: "sg-managed-cli", GatewayImage: "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-k8s-gateway:canary", RuntimeTLSSecret: "agentserver-runtime-tls", RuntimeServerName: "sandbox-runtime.agentserver.internal", APIEgress: []EgressRuleDocument{{CIDR: "10.251.224.152/32", Ports: []uint16{6443}}}, RuntimeExternalEgress: []EgressRuleDocument{}}
 	d.Managed.Kubernetes.BubblewrapProfile = true
+	d.Managed.Kubernetes.UnrestrictedNetwork = true
 	d.Managed.Kubernetes.APIServerEntityPolicy = true
 	d.Managed.Kubernetes.RuntimeProxyURL = kubernetesRuntimeProxyURL(d.ClusterDomain)
 	d.SandboxRegions = ManagedSandboxRegionsDocument{DefaultRegion: "sg", Regions: []string{"sg"}}
@@ -126,10 +130,10 @@ func TestKubernetesChartRendersExecutableGraphWithoutTAE(t *testing.T) {
 	if !strings.Contains(string(rawPod), "AGENTSERVER_SANDBOX_HTTP_PROXY") || !strings.Contains(string(rawPod), d.Managed.Kubernetes.RuntimeProxyURL) {
 		t.Fatal("runtime internal egress missing")
 	}
-	policy := findResource(t, foundation, "NetworkPolicy", "sandbox-cli-egress")
-	rawPolicy, _ := json.Marshal(policy)
-	if !strings.Contains(string(rawPolicy), "ssh-egress-merlin-i18nbd-syd2a-83092") {
-		t.Fatal("runtime proxy has no narrow egress rule")
+	for _, obj := range foundation {
+		if (obj["kind"] == "NetworkPolicy" || obj["kind"] == "CiliumNetworkPolicy") && objectField(t, obj, "metadata")["namespace"] == d.Managed.Kubernetes.Namespace {
+			t.Fatal("unrestricted runtime still has a network policy")
+		}
 	}
 	apiPolicy := findResource(t, foundation, "CiliumNetworkPolicy", "sandbox-gateway-k8s-apiserver")
 	apiSpec := objectField(t, apiPolicy, "spec")

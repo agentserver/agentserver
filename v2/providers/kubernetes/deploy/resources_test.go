@@ -62,3 +62,29 @@ func TestTemplateRejectsMissingImageAndNames(t *testing.T) {
 		t.Fatal("empty configuration accepted")
 	}
 }
+
+func TestUnrestrictedRuntimeKeepsIsolationWithoutNetworkPolicies(t *testing.T) {
+	c := Config{Namespace: "agentserver-sandboxes", TemplateName: "managed-cli-v1", RuntimeImage: "registry.example/runtime:1", RuntimeTLSSecret: "runtime-tls", GatewayNamespace: "agentserver", GatewayServiceAccount: "sandbox-gateway-k8s", GatewayIdentity: "spiffe://agentserver.test/ns/agentserver/sa/sandbox-gateway-k8s", UnrestrictedNetwork: true}
+	objects, err := Resources(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objects) != 5 {
+		t.Fatalf("unexpected unrestricted resource count: %d", len(objects))
+	}
+	for _, obj := range objects {
+		if obj.GetKind() == "NetworkPolicy" || obj.GetKind() == "CiliumNetworkPolicy" {
+			t.Fatal("unrestricted runtime still has a network policy")
+		}
+		if obj.GetKind() == "SandboxTemplate" {
+			mode, _, _ := unstructured.NestedString(obj.Object, "spec", "networkPolicyManagement")
+			if mode != "Unmanaged" {
+				t.Fatal("controller could reintroduce network policy")
+			}
+			pod, _, _ := unstructured.NestedMap(obj.Object, "spec", "podTemplate", "spec")
+			if pod["automountServiceAccountToken"] != false {
+				t.Fatal("network setting granted Kubernetes credentials")
+			}
+		}
+	}
+}

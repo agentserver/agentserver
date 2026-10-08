@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +34,9 @@ func TestLoadWorkerDeploymentVerifiesPinnedArtifacts(t *testing.T) {
 		}
 		if deployment.keyring == nil || deployment.preparer == nil || deployment.controlClient == nil || deployment.executorClient == nil {
 			t.Fatalf("incomplete loaded worker deployment: %+v", deployment)
+		}
+		if deployment.executorClient.Transport.(*http.Transport).ResponseHeaderTimeout != 0 || deployment.executorClient.Timeout != 0 || deployment.controlClient.Transport.(*http.Transport).ResponseHeaderTimeout != 30*time.Second {
+			t.Fatal("executor tools and short control requests must have separate response-header budgets")
 		}
 		deployment.controlClient.CloseIdleConnections()
 		deployment.executorClient.CloseIdleConnections()
@@ -313,6 +318,7 @@ func writeWorkerTestTLS(t *testing.T, root string) (caPath, certificatePath, key
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true, IsCA: true,
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
 	if err != nil {

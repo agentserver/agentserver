@@ -33,6 +33,9 @@ type Config struct {
 	RuntimeClassName  string
 	BubblewrapProfile bool
 	RuntimeProxyURL   string
+	// Explicit operator choice: the renderer and sandbox controller install
+	// no ingress or egress policy for these runtime Pods.
+	UnrestrictedNetwork bool
 }
 
 func Resources(c Config) ([]map[string]any, error) {
@@ -95,7 +98,7 @@ func Resources(c Config) ([]map[string]any, error) {
 		return body
 	}
 	selector := map[string]any{"matchLabels": podLabels}
-	return []map[string]any{
+	objects := []map[string]any{
 		obj("v1", "ServiceAccount", "sandbox-runtime", map[string]any{"automountServiceAccountToken": false}),
 		obj("extensions.agents.x-k8s.io/v1beta1", "SandboxTemplate", c.TemplateName, map[string]any{"spec": map[string]any{
 			"service": true, "networkPolicyManagement": "Unmanaged", "envVarsInjectionPolicy": "Disallowed", "volumeClaimTemplatesPolicy": "Disallowed",
@@ -113,13 +116,23 @@ func Resources(c Config) ([]map[string]any, error) {
 			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "sandbox-lifecycle"},
 			"subjects": []any{map[string]any{"kind": "ServiceAccount", "name": c.GatewayServiceAccount, "namespace": c.GatewayNamespace}},
 		}),
+	}
+	if c.UnrestrictedNetwork {
+		return objects, nil
+	}
+	return append(objects,
 		obj("networking.k8s.io/v1", "NetworkPolicy", "sandbox-default-deny", map[string]any{"spec": map[string]any{"podSelector": map[string]any{}, "policyTypes": []any{"Ingress", "Egress"}}}),
 		obj("networking.k8s.io/v1", "NetworkPolicy", "sandbox-runtime", map[string]any{"spec": map[string]any{
 			"podSelector": selector, "policyTypes": []any{"Ingress", "Egress"},
 			"ingress": []any{map[string]any{"from": []any{map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": c.GatewayNamespace}}, "podSelector": map[string]any{"matchLabels": map[string]any{"app.kubernetes.io/name": firstNonEmpty(c.GatewayComponent, "sandbox-gateway-k8s")}}}}, "ports": []any{map[string]any{"protocol": "TCP", "port": int64(8443)}}}},
 			"egress":  []any{map[string]any{"to": []any{map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": map[string]any{"matchLabels": map[string]any{"k8s-app": "kube-dns"}}}}, "ports": []any{map[string]any{"protocol": "UDP", "port": int64(53)}, map[string]any{"protocol": "TCP", "port": int64(53)}}}},
 		}}),
-	}, nil
+	), nil
 }
 
-func firstNonEmpty(value, fallback string) string { if value != "" { return value }; return fallback }
+func firstNonEmpty(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
+}

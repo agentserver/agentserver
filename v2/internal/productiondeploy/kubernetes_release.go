@@ -76,6 +76,7 @@ func PrepareKubernetesRelease(base LoadedConfig, release KubernetesRelease) (Loa
 		BubblewrapProfile:     true,
 		APIServerEntityPolicy: true,
 		RuntimeProxyURL:       kubernetesRuntimeProxyURL(d.ClusterDomain),
+		UnrestrictedNetwork:   true,
 		AllWorkspaces:         release.AllWorkspaces,
 		Namespace:             "agentserver-sandboxes", Pool: "managed-cli-v1", Scope: "sg-managed-cli",
 		GatewayImage: release.GatewayImage, RuntimeTLSSecret: "agentserver-runtime-tls", RuntimeServerName: "sandbox-runtime.agentserver.internal",

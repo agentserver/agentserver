@@ -27,7 +27,9 @@ fixed with a precise Cilium rule. See [OPERATIONS.md](OPERATIONS.md).
   authenticated NDJSON transport, Core migration 0033, registered Kubernetes
   environment validation and managed execution lifecycle/lease fencing.
 - `deploy.Resources` renders a template, demand-only pool (zero prewarmed
-  replicas), ServiceAccount, namespace-scoped gateway RBAC and NetworkPolicies.
+  replicas), ServiceAccount, namespace-scoped gateway RBAC and optional NetworkPolicies.
+  Production sets `UnrestrictedNetwork=true`, omitting all runtime ingress/egress
+  policies as requested; the controller uses unmanaged network policy mode.
   `RuntimeClassName=""` **omits** `runtimeClassName`, selecting the default
   container runtime as requested. It does not create a class named `default`.
 - `cmd/k8s-runtime` implements authenticated binding, one-shot process start,
@@ -55,10 +57,11 @@ does not implement process/files operations.
 The default-runtime template is ordinary container isolation, **not** Kata,
 gVisor or VM isolation. It disables ServiceAccount token automount and service
 links, runs non-root, drops capabilities, disables privilege escalation, uses
-a read-only root filesystem, applies resource limits, and admits ingress only
-from `sandbox-gateway-k8s`. The production renderer adds public HTTPS egress
-(excluding private/metadata ranges); private endpoints require explicit CIDRs.
-Real CLI network smoke is still required before activation.
+a read-only root filesystem and applies resource limits. Production sandbox
+networking is unrestricted in SG/CN: the renderer installs no runtime ingress or
+egress policies, while mTLS still authenticates all runtime command requests.
+Control-plane network policies are unaffected. Removing namespace restrictions
+does not override external routing, firewalls or upstream authentication.
 
 The current template's `/workspace` is **ephemeral** (`emptyDir`). It is suitable
 only for the initial managed-CLI profile. Persistent source workspaces need a

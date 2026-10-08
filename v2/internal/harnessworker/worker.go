@@ -913,7 +913,11 @@ func workerRuntimeFailureMessage(
 	if stderrTruncated {
 		details = append(details, "stderr_truncated=true")
 	}
-	return "the worker could not complete bounded runtime cleanup; " + strings.Join(details, " ")
+	prefix := "the worker could not complete bounded runtime cleanup"
+	if failures.runner != nil && failures.notification == nil && failures.closeStdin == nil && failures.processWait == nil && failures.mcp == nil && failures.runtime == nil {
+		prefix = "the worker execution failed"
+	}
+	return prefix + "; " + strings.Join(details, " ")
 }
 
 func appServerProcessStderr(process oneShotWorkerProcess) ([]byte, bool) {
@@ -980,6 +984,8 @@ func safeWorkerDiagnostic(raw []byte, maximumBytes int) string {
 func classifyStockTurnFailure(turnError, stderr []byte) string {
 	contents := strings.ToLower(string(turnError) + "\n" + string(stderr))
 	switch {
+	case strings.Contains(contents, "executor mcp") && containsAny(contents, "timed out", "timeout", "deadline exceeded"):
+		return "tool_transport_timeout"
 	case containsAny(contents,
 		"serveroverloaded", "server overloaded", "selected model is at capacity",
 		"model is at capacity"):

@@ -49,9 +49,21 @@ ByteCloud resolves to private addresses that are not directly reachable from SG
 Pods. Only bkectl receives the configured internal SOCKS5 route. Lark remains on
 public HTTPS: routing its public CDN through that internal proxy timed out in the
 live test. Both paths subsequently returned verified TLS/HTTP 200 without any
-credential in the diagnostic requests. Network policy permits the exact proxy
-Pod selector/port, not all private networks. Command inputs cannot override the
-deployment-owned proxy variables.
+credential in the diagnostic requests. The existing bkectl SOCKS route remains
+a connectivity route, not a namespace network allowlist. Command inputs cannot
+override the deployment-owned proxy variables.
+
+The operator subsequently requested **unrestricted sandbox networking in both
+SG and CN**. Production release preparation now sets
+`managedExecutor.kubernetes.unrestrictedNetwork=true`. The SG Chart stops
+rendering `sandbox-default-deny`, `sandbox-runtime` and `sandbox-cli-egress`, so
+Helm removes those three policies on upgrade. CN already has no sandbox namespace
+policies. Both templates retain `networkPolicyManagement: Unmanaged`; the Agent
+Sandbox controller must not recreate restrictions. Control-plane policies in
+`agentserver` (Core, executor, llmproxy, gateways) remain separate and unchanged.
+This does not enable host networking, privileged containers, Kubernetes tokens
+or unauthenticated runtime commands. Actual connectivity still depends on routing
+and the destination's authentication/firewalls, not just this namespace policy.
 
 SG Cilium excludes node identities from ordinary CIDR matching. The gateway's
 API-server IP/port `ipBlock` alone timed out, even after adding the Service IP.
@@ -189,3 +201,21 @@ started the actual new image on CN `n37-104-065` and SG `n251-239-167`, both Rea
 with zero restarts. Full CI, real HTTP/2 20-second quiet-process tests and database
 regressions passed. The user-session bkectl retry remains the final product-path
 check; do not describe template/readiness checks as that end-to-end result.
+
+### Long MCP tool calls and worker header deadlines
+
+Run `75901713-c365-452c-bcd5-e88474ede085` exposed a separate worker-side bug:
+the CN bkectl process was authorized and acknowledged, but the worker's MCP
+HTTP client stopped waiting for response headers after 30 seconds, before the
+shell's 60-second deadline. Terminal-only tools may not send headers until their
+result is ready. This is not a sandbox network denial.
+
+The executor MCP HTTP client now has no separate response-header/whole-response
+timer. Its request context remains bounded by the signed maximum run duration,
+and the executor still enforces the command timeout and cleanup grace. The
+control client retains its 30-second header bound; dial/TLS bounds are unchanged.
+Tests exercise an actual 31-second authenticated HTTP/2 MCP call, reproduce the
+old cutoff with a shortened bound, verify cancellation and forbid automatic
+tool-call replay (`AGENTSERVER_RUN_LONG_MCP_TESTS=1`). Runner-only tool transport
+timeouts are reported as `tool_transport_timeout` / worker execution failure,
+not a model timeout or a cleanup failure when cleanup actually succeeded.

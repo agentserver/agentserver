@@ -199,7 +199,7 @@ func loadWorkerDeployment(configPath, attemptRoot string) (loadedWorkerDeploymen
 	if err != nil {
 		return loadedWorkerDeployment{}, err
 	}
-	executorClient, err := newWorkerHTTPClient(document.TLS)
+	executorClient, err := newWorkerExecutorHTTPClient(document.TLS)
 	if err != nil {
 		controlClient.CloseIdleConnections()
 		return loadedWorkerDeployment{}, err
@@ -378,6 +378,19 @@ func newWorkerHTTPClient(document workerTLSDocument) (*http.Client, error) {
 		},
 	}
 	return &http.Client{Transport: transport}, nil
+}
+
+func newWorkerExecutorHTTPClient(document workerTLSDocument) (*http.Client, error) {
+	client, err := newWorkerHTTPClient(document)
+	if err != nil {
+		return nil, err
+	}
+	// MCP tools/call may not send headers until a terminal-only shell result
+	// is ready. A fixed 30s header timer cuts off valid 60s (or longer) tools.
+	// The signed run context, command timeout and bounded cleanup still govern
+	// the call. Dial/TLS timeouts and the separate control client stay bounded.
+	client.Transport.(*http.Transport).ResponseHeaderTimeout = 0
+	return client, nil
 }
 
 func finishWorkerJSON(decoder *json.Decoder) error {

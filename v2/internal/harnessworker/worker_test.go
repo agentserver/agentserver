@@ -205,6 +205,21 @@ func TestWorkerRuntimeFailureMessageContainsOnlySafeDiagnostics(t *testing.T) {
 	}
 }
 
+func TestExecutorTimeoutDoesNotClaimModelOrCleanupFailure(t *testing.T) {
+	err := errors.New(`dynamic tool call "call-1" failed: executor MCP tools/call "shell": net/http: timeout awaiting response headers`)
+	message := workerRuntimeFailureMessage(workerCleanupFailures{runner: err}, nil, "interrupted", nil, false)
+	if !strings.HasPrefix(message, "the worker execution failed;") || !strings.Contains(message, "category=tool_transport_timeout") || !strings.Contains(message, "stages=runner") || strings.Contains(message, "model_timeout") || strings.Contains(message, "runtime cleanup") {
+		t.Fatal(message)
+	}
+	if category := classifyStockTurnFailure([]byte("model request timeout"), nil); category != "model_timeout" {
+		t.Fatalf("model timeout changed: %s", category)
+	}
+	message = workerRuntimeFailureMessage(workerCleanupFailures{runner: err, mcp: errors.New("cleanup failed")}, nil, "interrupted", nil, false)
+	if !strings.HasPrefix(message, "the worker could not complete bounded runtime cleanup;") {
+		t.Fatal("actual cleanup failure was hidden")
+	}
+}
+
 func TestOneShotWorkerLogsDetailedRedactedStockTurnFailure(t *testing.T) {
 	fixture := newOneShotWorkerFixture(t)
 	fixture.runner.terminalStatus = "failed"

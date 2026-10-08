@@ -163,6 +163,9 @@ jobs:
       - name: Verify quiet runtime commands survive the real HTTP2 write deadline
         if: ${{ inputs.application_repair == 'runtime' }}
         run: AGENTSERVER_RUN_RUNTIME_STREAM_TESTS=1 go -C v2 test ./internal/k8sruntime -run TestStreamWriteDeadlineDoesNotExpireBetweenFrames -count=1 -timeout=1m -v
+      - name: Verify executor MCP tools can run beyond the old 30-second header cutoff
+        if: ${{ inputs.application_repair == 'harness' || inputs.application_repair == 'all' }}
+        run: AGENTSERVER_RUN_LONG_MCP_TESTS=1 go -C v2 test ./cmd/harness-worker -run TestExecutorMCPHeaderBudgetAndCancellation -count=1 -timeout=1m -v
       - name: Verify managed credential and pre-dispatch state transitions with PostgreSQL
         if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
         run: |

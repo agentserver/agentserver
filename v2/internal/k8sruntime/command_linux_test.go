@@ -37,6 +37,19 @@ func TestRuntimeProxyCannotBeOverriddenByCommand(t *testing.T) {
 	}
 }
 
+func TestRuntimeCommandSharesUnrestrictedPodNetwork(t *testing.T) {
+	c := Config{Workspace: t.TempDir()}
+	args, err := sandboxArguments(c, sandboxcontract.RunCommandRequest{Executable: "bkectl", WorkingDirectory: c.Workspace, WorkspaceAccess: "read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range args {
+		if arg == "--unshare-net" || arg == "--unshare-all" {
+			t.Fatal("command added a separate restricted network namespace")
+		}
+	}
+}
+
 func liveConfig(t *testing.T) Config {
 	t.Helper()
 	bwrap := os.Getenv("AGENTSERVER_K8S_RUNTIME_LIVE_BWRAP")

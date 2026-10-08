@@ -5,6 +5,7 @@ set -euo pipefail
 v2_root=$(cd "$(dirname "$0")/../.." && pwd)
 : "${RELEASE_TAG:?}" "${HARNESS_BASE:?}" "${CLI_BASE:?}" "${RELEASE_DIRECTORY:?}"
 test ! -e "$RELEASE_DIRECTORY"
+test -f "$v2_root/platform-web/dist/index.html" || { printf '%s\n' 'Build Platform from source with pnpm --dir v2 web:build first' >&2; exit 1; }
 test -f "$v2_root/dsh-web/dist/plugin-resources.json" || { printf '%s\n' 'Build the pinned DSH submodule with bash v2/dsh-web/build.sh first' >&2; exit 1; }
 mkdir -p "$RELEASE_DIRECTORY/cli/bkectl-skills" "$RELEASE_DIRECTORY/service/bin" "$RELEASE_DIRECTORY/harness/bin"
 if [ -n "${CODEX_RUNTIME_DIRECTORY:-}" ]; then

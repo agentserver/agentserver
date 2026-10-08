@@ -1,14 +1,18 @@
 package platformweb
 
 import (
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
 )
 
 func TestPlatformBundleServesClosedProductRoutesAndHashedAssets(t *testing.T) {
+	requireBuiltBundle(t)
 	handler := Handler()
 	for _, route := range []string{
 		"/", "/index.html", "/workspaces", "/workspaces/9271bfe5-68a4-484b-a2d3-e9f450a42d0c",
@@ -43,6 +47,7 @@ func TestPlatformBundleServesClosedProductRoutesAndHashedAssets(t *testing.T) {
 }
 
 func TestPlatformBundleSecurityMethodsAndOAuthOrigin(t *testing.T) {
+	requireBuiltBundle(t)
 	handler, err := HandlerForOAuthOrigin("https://auth-sg.byted.bps.dev")
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +65,56 @@ func TestPlatformBundleSecurityMethodsAndOAuthOrigin(t *testing.T) {
 	for _, invalid := range []string{"", "http://auth-sg.byted.bps.dev", "https://auth-sg.byted.bps.dev/path"} {
 		if _, err := HandlerForOAuthOrigin(invalid); err == nil {
 			t.Fatalf("invalid OAuth origin %q was accepted", invalid)
+		}
+	}
+}
+
+func requireBuiltBundle(t *testing.T) {
+	t.Helper()
+	if bundle.err == nil {
+		return
+	}
+	if os.Getenv("AGENTSERVER_REQUIRE_PLATFORM_ASSETS") == "1" {
+		t.Fatal(bundle.err)
+	}
+	t.Skip(bundle.err)
+}
+
+func TestMissingPlatformBundleFailsExplicitly(t *testing.T) {
+	old := bundle
+	bundle = staticBundle{err: errors.New("Platform frontend is not built")}
+	t.Cleanup(func() { bundle = old })
+	if _, err := HandlerForOAuthOrigin("https://auth.example"); err == nil {
+		t.Fatal("production handler accepted missing frontend")
+	}
+	w := httptest.NewRecorder()
+	Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "https://agent.example/", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatal("missing frontend did not fail explicitly")
+	}
+}
+
+func TestPlatformBundleIncludesCurrentLLMGatewayContract(t *testing.T) {
+	requireBuiltBundle(t)
+	var scripts strings.Builder
+	if err := fs.WalkDir(bundle.files, "assets", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(name, ".js") {
+			data, err := fs.ReadFile(bundle.files, name)
+			if err != nil {
+				return err
+			}
+			scripts.Write(data)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"authType", "baseUrl", "apiKeyConfigured", "Base URL + API key"} {
+		if !strings.Contains(scripts.String(), field) {
+			t.Fatalf("Platform bundle is missing current Gateway contract/UI field %q; rebuild from source", field)
 		}
 	}
 }

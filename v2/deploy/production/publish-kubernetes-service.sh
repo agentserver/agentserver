@@ -5,6 +5,7 @@ set -euo pipefail
 v2_root=$(cd "$(dirname "$0")/../.." && pwd)
 : "${RELEASE_DIRECTORY:?}" "${GITHUB_SHA:?}"
 test ! -e "$RELEASE_DIRECTORY"
+test -f "$v2_root/platform-web/dist/index.html" || { printf '%s\n' 'Build Platform from source with pnpm --dir v2 web:build first' >&2; exit 1; }
 test -f "$v2_root/dsh-web/dist/plugin-resources.json" || { printf '%s\n' 'Build the pinned DSH submodule with bash v2/dsh-web/build.sh first' >&2; exit 1; }
 mkdir -p "$RELEASE_DIRECTORY/service/bin"
 for kind in harness k8s-runtime k8s-gateway k8s-profile-installer; do

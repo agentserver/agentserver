@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -27,6 +28,7 @@ type staticBundle struct {
 	files fs.FS
 	index []byte
 	count int
+	err   error
 }
 
 func mustBundle() staticBundle {
@@ -36,7 +38,7 @@ func mustBundle() staticBundle {
 	}
 	index, err := fs.ReadFile(files, "index.html")
 	if err != nil {
-		panic(fmt.Sprintf("read embedded Platform index: %v", err))
+		return staticBundle{err: errors.New("Platform frontend is not built; run pnpm --dir v2 web:build before building platform-gateway")}
 	}
 	count := 0
 	_ = fs.WalkDir(files, ".", func(_ string, entry fs.DirEntry, walkErr error) error {
@@ -57,6 +59,9 @@ func HandlerForOAuthOrigin(origin string) (http.Handler, error) {
 	if err := validateOrigin(origin); err != nil {
 		return nil, fmt.Errorf("platform web OAuth origin must be an exact HTTPS origin")
 	}
+	if bundle.err != nil {
+		return nil, bundle.err
+	}
 	return assetHandler{contentSecurityPolicy: contentSecurityPolicy + " " + origin}, nil
 }
 
@@ -64,6 +69,10 @@ type assetHandler struct{ contentSecurityPolicy string }
 
 func (handler assetHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setSecurityHeaders(response.Header(), handler.contentSecurityPolicy)
+	if bundle.err != nil {
+		http.Error(response, bundle.err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		response.Header().Set("Allow", "GET, HEAD")
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)

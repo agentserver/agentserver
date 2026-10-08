@@ -13,6 +13,8 @@ notebook/smoke-workspace/
 v2/.agentserver-v2-a04.*/
 v2/dsh-web/dist/*
 !v2/dsh-web/dist/.gitkeep
+v2/platform-web/dist/*
+!v2/platform-web/dist/.gitkeep
 
 # Generated from docs/api/openapi.yaml via `pnpm openapi:gen` —
 # never commit; CI and local dev regenerate on demand.

@@ -2,6 +2,8 @@ import { readFile, readdir, writeFile } from "node:fs/promises"
 import { extname, join } from "node:path"
 
 for (const root of ["platform-web/dist"]) await normalizeTree(root)
+// Vite empties dist on build; retain only this tracked placeholder in Git.
+await writeFile("platform-web/dist/.gitkeep", "\n")
 
 async function normalizeTree(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {

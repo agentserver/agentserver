@@ -141,11 +141,11 @@ jobs:
         run: |
           set -euo pipefail
           export AGENTSERVER_REQUIRE_DSH_ASSETS=1
+          export AGENTSERVER_REQUIRE_PLATFORM_ASSETS=1
           pnpm --dir v2 install --frozen-lockfile
+          pnpm --dir v2 web:check
           make -C v2 check
-          git diff --exit-code -- \
-            v2/web-shared/src/generated \
-            v2/platform-web/dist
+          git diff --exit-code -- v2/web-shared/src/generated
 
       - name: Download and verify pinned runtime artifacts
         id: runtime

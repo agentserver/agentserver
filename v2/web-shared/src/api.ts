@@ -175,7 +175,9 @@ export class ResourceAPI {
   }
 
   async createGateway(workspaceId: string, body: CreateLLMGateway) {
-    return take(await this.#client.POST("/v2/workspaces/{workspaceId}/llm-gateways", { params: { path: { workspaceId } }, body }))
+    const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/llm-gateways", { params: { path: { workspaceId } }, body }))
+    if (validateGateway(result.gateway, workspaceId).gatewayId !== canonicalID("gateway ID", body.gatewayId)) throw new Error("The Gateway response escaped its requested scope.")
+    return result
   }
 
   async updateGateway(workspaceId: string, gatewayId: string, body: UpdateLLMGateway) {

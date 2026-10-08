@@ -104,6 +104,17 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+      - uses: pnpm/action-setup@v4
+        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
+        with:
+          version: 11.18.0
+          run_install: false
+      - name: Build and test Platform frontend from this release source
+        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
+        run: |
+          pnpm --dir v2 install --frozen-lockfile
+          pnpm --dir v2 web:check
+          echo 'AGENTSERVER_REQUIRE_PLATFORM_ASSETS=1' >>"$GITHUB_ENV"
       - name: Download frontend built from pinned DSH source
         if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
         uses: actions/download-artifact@v4

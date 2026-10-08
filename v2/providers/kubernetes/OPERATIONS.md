@@ -153,5 +153,39 @@ The scope/error-reporting repair was deployed on 2026-10-08 as Helm revision
 167, Chart `0.1.0-config.d5eac249f9cd7`, publication run `37725949914` attempt 2.
 Migration 0037, both scope mappings, all workload readiness, DSH HTTP 200 and the
 workspace's retained CN selection were verified. PostgreSQL regressions passed
-in CI. A fresh authenticated credentialed CN query is still required for final
-product-path acceptance; readiness and CLI version alone do not establish it.
+in CI. The subsequent CN user run `aa71e5e8-f8a0-4251-922c-4e17ec5b3c5b`
+confirmed credential resolution, injection and runtime acknowledgement succeed.
+It exposed a separate output-stream fault, described below; credential injection
+success alone still does not establish full query success.
+
+### Quiet HTTP/2 command streams
+
+The original runtime armed a 15-second response write deadline for each NDJSON
+frame but did not clear it after flushing. On HTTP/2, the timer actively resets
+the stream even while the process is quietly waiting, rather than merely timing
+out a blocked write. The real CN query lost its stream about 15 seconds after
+ACK, leading to `invalid_stream_json`, a conservative `unknown` outcome and
+sandbox fencing. Later calls in that turn then saw an unavailable environment.
+
+The runtime now bounds only each Encode/Flush and clears the write deadline on
+both success and failure. Process deadlines, output limits and fencing remain;
+never solve a lost stream by claiming success or replaying an uncertain command.
+Tests cover real HTTP/1.1 and HTTP/2 connections, an actual quiet process, deadline
+cleanup on failed writes, and a 20-second quiet command using the unmodified
+production deadline (`AGENTSERVER_RUN_RUNTIME_STREAM_TESTS=1`).
+
+Use `application_repair=runtime` in the Kubernetes publication workflow for this
+fix. Its image overlay changes only `agentserver-k8s-runtime`, retaining the
+qualified CLI/bubblewrap artifacts, non-root user and entrypoint. Update both the
+SG Chart's runtime image and CN's `agentserver-cn-sandbox-template` using targeted
+Pulumi updates. Template changes apply to newly allocated sandboxes; do not
+replace live user runtimes or change their boot identity underneath active runs.
+
+The runtime repair was published by run `37729403569` and deployed on
+2026-10-08: SG Helm revision 168 (`0.1.0-config.d537bf3bac1db`) and CN's separately
+owned template both use runtime `c00766a94db72ec0020b9ba46f3b8ff729ffe2463b0c75e96cf1ef74208eba6b`.
+All application deployments were Ready. Fresh credential-free smoke claims
+started the actual new image on CN `n37-104-065` and SG `n251-239-167`, both Ready
+with zero restarts. Full CI, real HTTP/2 20-second quiet-process tests and database
+regressions passed. The user-session bkectl retry remains the final product-path
+check; do not describe template/readiness checks as that end-to-end result.

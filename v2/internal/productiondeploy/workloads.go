@@ -621,7 +621,9 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 			)
 		}
 		for _, loaded := range config.ManagedSandboxProfiles {
-			hosts[loaded.Document.Gateway.ServerName] = loaded.Document.Gateway.ClusterIP
+			if !loaded.Document.Gateway.External {
+				hosts[loaded.Document.Gateway.ServerName] = loaded.Document.Gateway.ClusterIP
+			}
 		}
 	}
 	return deployment(deploymentInput{

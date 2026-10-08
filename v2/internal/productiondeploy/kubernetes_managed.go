@@ -143,6 +143,9 @@ func validateKubernetesProfiles(d *ConfigDocument) ([]LoadedManagedSandboxProfil
 		if !sameKubernetesEnvironment(candidate.Environment, d.Managed.Environment) {
 			return nil, fmt.Errorf("sandboxProfiles[%d].environment differs from managed executor", index)
 		}
+		if !validUUID(candidate.Environment.EnvironmentID) || slices.Contains([]string{d.Bootstrap.WorkspaceID, d.Bootstrap.SessionID, d.Bootstrap.OwnerUserID, d.Bootstrap.ExecutorID}, candidate.Environment.EnvironmentID) {
+			return nil, errors.New("Kubernetes profile requires a distinct non-zero environment UUID")
+		}
 		if candidate.Region == managedsandboxprofile.RegionSG && candidate.Environment.EnvironmentID != d.Managed.Environment.EnvironmentID {
 			return nil, errors.New("SG Kubernetes environment identity must equal the managed executor environment")
 		}
@@ -202,6 +205,10 @@ func validateKubernetesProfiles(d *ConfigDocument) ([]LoadedManagedSandboxProfil
 
 func sameKubernetesEnvironment(candidate, managed ManagedEnvironmentDocument) bool {
 	candidate.EnvironmentID = managed.EnvironmentID
+	if validateText("environment display name", candidate.Root.DisplayName, 1, 256) != nil {
+		return false
+	}
+	candidate.Root.DisplayName = managed.Root.DisplayName
 	return reflect.DeepEqual(candidate, managed)
 }
 

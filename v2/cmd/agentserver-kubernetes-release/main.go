@@ -19,7 +19,7 @@ func main() {
 	flag.BoolVar(&release.UpgradeCodex, "upgrade-codex", false, "explicitly upgrade the previous runtime metadata to the current packaged Codex release")
 	flag.StringVar(&release.CNGatewayURL, "cn-gateway-url", "https://"+productiondeploy.ProductionCNSandboxGatewayHostname, "CN external sandbox gateway HTTPS origin")
 	flag.StringVar(&release.CNGatewayServerName, "cn-gateway-server-name", productiondeploy.ProductionCNSandboxGatewayBackendHost, "CN sandbox gateway backend TLS server name")
-	flag.StringVar(&release.CNEnvironmentID, "cn-environment-id", "50000000-0000-4000-8000-000000000005", "CN Kubernetes managed environment UUID")
+	flag.StringVar(&release.CNEnvironmentID, "cn-environment-id", "73cd7602-c0be-4d9a-96a9-d0c09bf6f689", "CN Kubernetes managed environment UUID")
 	flag.StringVar(&release.RuntimeImage, "runtime-image", "", "published Kubernetes runtime image")
 	flag.StringVar(&release.GatewayImage, "gateway-image", "", "published Kubernetes gateway image")
 	flag.StringVar(&release.EnvironmentID, "environment-id", "", "Kubernetes-only environment UUID")

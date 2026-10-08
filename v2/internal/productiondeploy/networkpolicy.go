@@ -19,7 +19,9 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	coreIngressComponents := []string{platformComponent, browserComponent, dshComponent, executorComponent, harnessComponent, llmproxyComponent}
 	if managedExecutionActive(document.Managed) {
 		for _, profile := range config.ManagedSandboxProfiles {
-			coreIngressComponents = append(coreIngressComponents, profile.Document.Gateway.Component)
+			if !profile.Document.Gateway.External {
+				coreIngressComponents = append(coreIngressComponents, profile.Document.Gateway.Component)
+			}
 		}
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			coreIngressComponents = append(coreIngressComponents, egressComponent)
@@ -87,7 +89,9 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	hydraSetupEgress := append(append([]any(nil), dns...), componentTCPEgress(hydraComponent, document.Services.Hydra.AdminPort))
 	if managedExecutionActive(document.Managed) {
 		for _, profile := range config.ManagedSandboxProfiles {
-			executorEgress = append(executorEgress, componentTCPEgress(profile.Document.Gateway.Component, profile.Document.Gateway.Port))
+			if !profile.Document.Gateway.External {
+				executorEgress = append(executorEgress, componentTCPEgress(profile.Document.Gateway.Component, profile.Document.Gateway.Port))
+			}
 		}
 	}
 
@@ -108,6 +112,9 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		networkPolicy(config, hydraComponent, matchComponent(hydraComponent), hydraIngress, hydraEgress),
 	}
 	if managedExecutionActive(document.Managed) {
+		if document.Managed.Provider == "k8s" && slices.ContainsFunc(config.ManagedSandboxProfiles, func(p LoadedManagedSandboxProfile) bool { return p.Document.Gateway.External }) {
+			items = append(items, externalSandboxGatewayEgress(config))
+		}
 		items = append(items, networkPolicy(config, "agentserver-managed-environment-bootstrap-egress", matchComponent(managedEnvironmentBootstrapComponent), nil, databaseEgress))
 		for _, profile := range config.ManagedSandboxProfiles {
 			if profile.Document.Gateway.External {
@@ -145,6 +152,22 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		)
 	}
 	return items
+}
+
+// Cilium DNS-aware egress tracks only the configured CN Gateway hostname.
+// This is a control-plane rule for executor-gateway, not sandbox runtime egress.
+func externalSandboxGatewayEgress(config LoadedConfig) kubeObject {
+	return kubeObject{
+		"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy",
+		"metadata": kubeObject{"name": "executor-cn-gateway-egress", "namespace": config.Document.Namespace},
+		"spec": kubeObject{
+			"endpointSelector": matchComponent(executorComponent),
+			"egress": []any{
+				kubeObject{"toEndpoints": []any{kubeObject{"matchLabels": kubeObject{"k8s:io.kubernetes.pod.namespace": config.Document.Network.DNSNamespace, "k8s:k8s-app": "kube-dns"}}}, "toPorts": []any{kubeObject{"ports": []any{kubeObject{"port": "53", "protocol": "ANY"}}, "rules": kubeObject{"dns": []any{kubeObject{"matchName": ProductionCNSandboxGatewayHostname}}}}}},
+				kubeObject{"toFQDNs": []any{kubeObject{"matchName": ProductionCNSandboxGatewayHostname}}, "toPorts": []any{kubeObject{"ports": []any{kubeObject{"port": "443", "protocol": "TCP"}}}}},
+			},
+		},
+	}
 }
 
 func publicHTTPSEgress() []any {

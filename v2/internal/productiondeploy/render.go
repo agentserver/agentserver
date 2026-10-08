@@ -197,6 +197,7 @@ type managedEnvironmentRender struct {
 }
 
 type managedEnvironmentBootstrapJSON struct {
+	RetainedWorkspaceRegions   []string                            `json:"retainedWorkspaceRegions,omitempty"`
 	MigrateAllWorkspaceRegions bool                                `json:"migrateAllWorkspaceRegions,omitempty"`
 	BackendKind                string                              `json:"backendKind,omitempty"`
 	Version                    int                                 `json:"version"`
@@ -209,7 +210,12 @@ type managedEnvironmentBootstrapJSON struct {
 
 func renderManagedEnvironmentBootstrapJSON(config LoadedConfig, profile LoadedManagedSandboxProfile) ([]byte, error) {
 	document := config.Document
+	var retainedRegions []string
+	if document.Managed.Provider == "k8s" {
+		retainedRegions = document.SandboxRegions.Regions
+	}
 	return marshalCanonicalDocument(managedEnvironmentBootstrapJSON{
+		RetainedWorkspaceRegions:   retainedRegions,
 		MigrateAllWorkspaceRegions: document.Managed.Provider == "k8s" && document.Managed.Kubernetes.AllWorkspaces,
 		BackendKind:                document.Managed.Provider,
 		Version:                    1, WorkspaceID: document.Bootstrap.WorkspaceID, ExecutorID: document.Bootstrap.ExecutorID,

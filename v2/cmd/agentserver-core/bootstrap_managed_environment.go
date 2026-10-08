@@ -25,6 +25,7 @@ const (
 )
 
 type managedEnvironmentProfileDocument struct {
+	RetainedWorkspaceRegions   []string                                `json:"retainedWorkspaceRegions,omitempty"`
 	MigrateAllWorkspaceRegions bool                                    `json:"migrateAllWorkspaceRegions,omitempty"`
 	BackendKind                string                                  `json:"backendKind,omitempty"`
 	Version                    int                                     `json:"version"`
@@ -110,6 +111,7 @@ func loadManagedEnvironmentProfile(configPath string) (coredb.ManagedEnvironment
 	}
 	return coredb.ManagedEnvironmentProfile{
 		MigrateAllWorkspaceRegions: document.MigrateAllWorkspaceRegions,
+		RetainedWorkspaceRegions:   document.RetainedWorkspaceRegions,
 		BackendKind:                document.BackendKind,
 		WorkspaceID:                document.WorkspaceID, ExecutorID: document.ExecutorID,
 		EnvironmentID: document.EnvironmentID, RootDescriptor: descriptor,
@@ -119,7 +121,9 @@ func loadManagedEnvironmentProfile(configPath string) (coredb.ManagedEnvironment
 }
 
 func validateManagedEnvironmentProfileDocument(document managedEnvironmentProfileDocument) error {
-	if document.MigrateAllWorkspaceRegions&&document.BackendKind!="k8s"{return errors.New("workspace region migration requires Kubernetes deployment")}
+	if document.MigrateAllWorkspaceRegions && document.BackendKind != "k8s" {
+		return errors.New("workspace region migration requires Kubernetes deployment")
+	}
 	if document.BackendKind != "" && document.BackendKind != "tae" && document.BackendKind != "k8s" {
 		return errors.New("unsupported managed environment backend")
 	}

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
 const externalManagedSandboxTokenHeader = "X-AgentServer-Managed-Sandbox-Token"
@@ -47,13 +49,17 @@ func NewSPIFFEWorkloadAuthorizer(allowedURIs ...string) (*SPIFFEWorkloadAuthoriz
 }
 
 func (authorizer *SPIFFEWorkloadAuthorizer) AuthorizeWorkload(request *http.Request, _ string) error {
-	if request != nil && len(authorizer.externalToken) > 0 && request.TLS != nil && len(request.TLS.VerifiedChains) == 0 {
-		value := request.Header.Get(externalManagedSandboxTokenHeader)
-		const managedSandboxPrefix = "/internal/v2/managed-sandboxes"
-		managedSandboxPath := request.URL.Path == managedSandboxPrefix ||
-			strings.HasPrefix(request.URL.Path, managedSandboxPrefix+"/") ||
-			strings.HasPrefix(request.URL.Path, managedSandboxPrefix+":")
-		if subtle.ConstantTimeCompare([]byte(value), authorizer.externalToken) == 1 && managedSandboxPath {
+	if request == nil || request.TLS == nil {
+		return errors.New("verified TLS workload connection is required")
+	}
+	if request.URL != nil && len(authorizer.externalToken) > 0 && len(request.TLS.PeerCertificates) == 0 {
+		values := request.Header.Values(externalManagedSandboxTokenHeader)
+		path := request.URL.Path
+		managedSandboxPath := path == corecontract.ReserveManagedSandboxPath ||
+			path == corecontract.ListManagedSandboxesForReconcilePath ||
+			path == corecontract.AuthorizeManagedSandboxOperationPath ||
+			strings.HasPrefix(path, corecontract.ManagedSandboxPathPrefix)
+		if len(values) == 1 && request.URL.RawPath == "" && managedSandboxPath && subtle.ConstantTimeCompare([]byte(values[0]), authorizer.externalToken) == 1 {
 			return nil
 		}
 	}

@@ -94,6 +94,7 @@ func PrepareKubernetesRelease(base LoadedConfig, release KubernetesRelease) (Loa
 		}
 		cnEnv := d.Managed.Environment
 		cnEnv.EnvironmentID = release.CNEnvironmentID
+		cnEnv.Root.DisplayName = "CN · Kubernetes"
 		d.SandboxRegions.Regions = []string{"cn", "sg"}
 		d.SandboxProfiles = append(d.SandboxProfiles, ManagedSandboxProfileDocument{Region: "cn", Environment: cnEnv, Gateway: ManagedSandboxGatewayDocument{Component: "sandbox-gateway-cn-k8s", Port: 8443, ServerName: release.CNGatewayServerName, ExternalURL: release.CNGatewayURL, Secret: "agentserver-sandbox-cn-k8s-secrets", External: true}, SandboxExternalEgress: []EgressRuleDocument{}})
 	}

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -28,6 +29,7 @@ var ErrManagedEnvironmentProfileConflict = errors.New("managed environment ID be
 // projected separately from managed_sandboxes.
 type ManagedEnvironmentProfile struct {
 	MigrateAllWorkspaceRegions bool
+	RetainedWorkspaceRegions   []string
 	BackendKind                string
 	WorkspaceID                string
 	ExecutorID                 string
@@ -118,12 +120,16 @@ func bootstrapManagedEnvironmentProfileConfig(
 	}
 	result.Created = created == 1
 	if profile.BackendKind == DispatchTargetKubernetes {
+		retainedRegions := profile.RetainedWorkspaceRegions
+		if len(retainedRegions) == 0 {
+			retainedRegions = []string{"sg"}
+		}
 		// Deployment cutover changes only future-run settings, never frozen
 		// run bindings or historical TAE rows. Record each affected workspace's
 		// previous audit owner, as in the initial settings migration.
 		query := fmt.Sprintf(`WITH changed AS (
 SELECT workspace_id,region,updated_by FROM %s.workspace_managed_sandbox_settings
-WHERE region <> 'sg' AND ($1::boolean OR workspace_id = $2) FOR UPDATE
+WHERE NOT (region = ANY($3::text[])) AND ($1::boolean OR workspace_id = $2) FOR UPDATE
 ), updated AS (
 UPDATE %s.workspace_managed_sandbox_settings setting SET region='sg',version=setting.version+1,updated_at=pg_catalog.clock_timestamp()
 FROM changed WHERE setting.workspace_id=changed.workspace_id
@@ -131,7 +137,7 @@ RETURNING setting.workspace_id,setting.version,changed.region,changed.updated_by
 ) INSERT INTO %s.workspace_managed_sandbox_setting_events
 (event_id,workspace_id,actor_id,previous_region,current_region,setting_version)
 SELECT pg_catalog.gen_random_uuid(),workspace_id,updated_by,region,'sg',version FROM updated`, quotedSchema, quotedSchema, quotedSchema)
-		if _, err := transaction.Exec(ctx, query, profile.MigrateAllWorkspaceRegions, profile.WorkspaceID); err != nil {
+		if _, err := transaction.Exec(ctx, query, profile.MigrateAllWorkspaceRegions, profile.WorkspaceID, retainedRegions); err != nil {
 			return result, databaseError("migrate Kubernetes workspace region settings", err)
 		}
 	}
@@ -142,6 +148,11 @@ SELECT pg_catalog.gen_random_uuid(),workspace_id,updated_by,region,'sg',version 
 }
 
 func validateManagedEnvironmentProfile(profile ManagedEnvironmentProfile) error {
+	for _, region := range profile.RetainedWorkspaceRegions {
+		if profile.BackendKind != DispatchTargetKubernetes || (region != managedsandboxprofile.RegionCN && region != managedsandboxprofile.RegionSG) {
+			return errors.New("retained workspace regions require installed CN/SG Kubernetes profiles")
+		}
+	}
 	if profile.MigrateAllWorkspaceRegions && profile.BackendKind != DispatchTargetKubernetes {
 		return errors.New("workspace region migration requires Kubernetes profile")
 	}

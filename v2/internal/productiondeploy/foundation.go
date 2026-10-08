@@ -1,6 +1,7 @@
 package productiondeploy
 
 import (
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/egressgateway"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
 	"slices"
@@ -259,7 +260,12 @@ func egressAuthorizerBackendTLSPolicy(config LoadedConfig) kubeObject {
 }
 
 func coreExternalHTTPRoute(config LoadedConfig) kubeObject {
-	return httpRoute(config, "agentserver-core-external", ProductionCoreExternalHostname, coreComponent, config.Document.Services.Core.Port, []kubeObject{pathMatch("PathPrefix", "/internal/v2/managed-sandboxes")})
+	return httpRoute(config, "agentserver-core-external", ProductionCoreExternalHostname, coreComponent, config.Document.Services.Core.Port, []kubeObject{
+		pathMatch("Exact", corecontract.ReserveManagedSandboxPath),
+		pathMatch("Exact", corecontract.ListManagedSandboxesForReconcilePath),
+		pathMatch("Exact", corecontract.AuthorizeManagedSandboxOperationPath),
+		pathMatch("PathPrefix", corecontract.ManagedSandboxPathPrefix),
+	})
 }
 
 func coreExternalBackendTLSPolicy(config LoadedConfig) kubeObject {

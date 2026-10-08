@@ -34,3 +34,16 @@ script includes the three current Gateway fields and the API-key UI. Existing
 Gateway metadata was preserved. Frontend, service and PostgreSQL tests passed.
 No production Gateway or API key was created for validation; user-specific
 upstream authentication still requires the owner's real form submission.
+
+Model gateway traffic no longer rejects a hostname just because its DNS answer
+is RFC1918/ULA. This applies to the llmproxy upstream client only; URL shape,
+HTTPS certificate verification, run/workspace authority and write-only API keys
+remain enforced. Loopback, link-local, metadata and other special-use addresses
+are still rejected. Other uses of the public-only HTTPS client, including OIDC
+discovery, retain their default policy.
+
+Private connectivity is controlled by deployment egress. SG currently allows
+`axonhub-cn.byted.bps.dev` on TCP 443, tracking its DNS addresses and requiring
+that exact TLS SNI. The DNS rule preserves resolution for existing public model
+gateways; it does not grant general private-network HTTPS access. Changing the
+LLM Gateway in the UI does not itself edit cluster network policy.

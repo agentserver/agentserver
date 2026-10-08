@@ -111,6 +111,9 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		networkPolicy(config, llmproxyComponent, matchComponent(llmproxyComponent), llmIngress, llmEgress),
 		networkPolicy(config, hydraComponent, matchComponent(hydraComponent), hydraIngress, hydraEgress),
 	}
+	if document.Managed.Provider == "k8s" {
+		items = append(items, privateLLMGatewayEgress(config))
+	}
 	if managedExecutionActive(document.Managed) {
 		if document.Managed.Provider == "k8s" && slices.ContainsFunc(config.ManagedSandboxProfiles, func(p LoadedManagedSandboxProfile) bool { return p.Document.Gateway.External }) {
 			items = append(items, externalSandboxGatewayEgress(config))
@@ -152,6 +155,26 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		)
 	}
 	return items
+}
+
+const productionCNLLMGatewayHostname = "axonhub-cn.byted.bps.dev"
+
+// Private model egress is deployment-owned, not a workspace-controlled blanket
+// private-network allowance. DNS remains available for other public gateways;
+// only this exact HTTPS hostname is added as a private destination. TLS SNI
+// prevents the same ingress IP from granting access to another virtual host.
+func privateLLMGatewayEgress(config LoadedConfig) kubeObject {
+	return kubeObject{
+		"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy",
+		"metadata": kubeObject{"name": "llmproxy-cn-axonhub-egress", "namespace": config.Document.Namespace},
+		"spec": kubeObject{
+			"endpointSelector": matchComponent(llmproxyComponent),
+			"egress": []any{
+				kubeObject{"toEndpoints": []any{kubeObject{"matchLabels": kubeObject{"k8s:io.kubernetes.pod.namespace": config.Document.Network.DNSNamespace, "k8s:k8s-app": "kube-dns"}}}, "toPorts": []any{kubeObject{"ports": []any{kubeObject{"port": "53", "protocol": "ANY"}}, "rules": kubeObject{"dns": []any{kubeObject{"matchPattern": "*"}}}}}},
+				kubeObject{"toFQDNs": []any{kubeObject{"matchName": productionCNLLMGatewayHostname}}, "toPorts": []any{kubeObject{"ports": []any{kubeObject{"port": "443", "protocol": "TCP"}}, "serverNames": []any{productionCNLLMGatewayHostname}}}},
+			},
+		},
+	}
 }
 
 // Cilium DNS-aware egress tracks only the configured CN Gateway hostname.

@@ -93,7 +93,7 @@ function buildGatewayConfiguration(form: FormData, update: boolean) {
 		const apiKey = String(form.get("apiKey") ?? "")
 		if (!update && !apiKey) throw new Error("API key is required for a new API key gateway.")
 		if (apiKey && (apiKey.length > 8192 || /[^\x21-\x7e]/u.test(apiKey))) throw new Error("API key is outside protocol bounds.")
-		try { const parsed = new URL(baseUrl); if (parsed.protocol !== "https:" || parsed.search || parsed.hash || parsed.username || parsed.password) throw new Error() } catch { throw new Error("Base URL must be a public HTTPS API prefix without credentials, query or fragment.") }
+		try { const parsed = new URL(baseUrl); if (parsed.protocol !== "https:" || parsed.search || parsed.hash || parsed.username || parsed.password) throw new Error() } catch { throw new Error("Base URL must be an HTTPS API prefix without credentials, query or fragment.") }
 		return { ...common, baseUrl, ...(apiKey ? { apiKey } : {}) }
 	}
   const scopes = String(form.get("scopes") ?? "").trim().split(/\s+/u)

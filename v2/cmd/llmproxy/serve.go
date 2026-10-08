@@ -239,6 +239,9 @@ func newLLMProxyUpstreamHTTPClient() (*http.Client, error) {
 	return publichttps.NewClient(publichttps.ClientConfig{
 		NoOverallTimeout: true, ResponseHeaderTimeout: 60 * time.Second,
 		MaxIdleConns: 64, MaxIdleConnsPerHost: 16,
+		// Workspaces may use self-hosted model gateways with private DNS.
+		// Keep destination restrictions in deployment-owned egress policy.
+		AllowPrivateAddresses: true,
 	})
 }
 

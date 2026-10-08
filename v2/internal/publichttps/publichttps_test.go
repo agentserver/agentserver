@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"net/netip"
 	"strings"
 	"testing"
@@ -66,7 +67,7 @@ func TestControlledDialRejectsMixedDNSAnswerBeforeConnecting(t *testing.T) {
 	// TLS or network operation is needed.
 	_, err = controlledDialContext(staticResolver{addresses: []netip.Addr{
 		netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("127.0.0.1"),
-	}}, dialer)(t.Context(), "tcp", "gateway.example.com:443")
+	}}, dialer, false)(t.Context(), "tcp", "gateway.example.com:443")
 	if err == nil || !strings.Contains(err.Error(), "non-public") || len(dialer.addresses) != 0 {
 		t.Fatalf("mixed DNS dial = %v, attempts %v", err, dialer.addresses)
 	}
@@ -85,7 +86,47 @@ type recordingDialer struct {
 	addresses []string
 }
 
-func (dialer *recordingDialer) DialContext(context.Context, string, string) (net.Conn, error) {
-	dialer.addresses = append(dialer.addresses, "called")
+func (dialer *recordingDialer) DialContext(_ context.Context, _ string, address string) (net.Conn, error) {
+	dialer.addresses = append(dialer.addresses, address)
 	return nil, errors.New("unreachable")
+}
+
+func TestPrivateModelGatewayDialingIsExplicitAndStillAddressPinned(t *testing.T) {
+	for _, address := range []string{"10.37.194.91", "172.16.1.2", "192.168.1.2", "fdbd:dc01:ff:320:cb66:e2de:dacf:eea9"} {
+		for _, allowPrivate := range []bool{false, true} {
+			dialer := &recordingDialer{}
+			client, err := NewClient(ClientConfig{Resolver: staticResolver{addresses: []netip.Addr{netip.MustParseAddr(address)}}, Dialer: dialer, AllowPrivateAddresses: allowPrivate})
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport := client.Transport.(*http.Transport)
+			_, _ = transport.DialContext(t.Context(), "tcp", "axonhub-cn.byted.bps.dev:443")
+			if allowPrivate {
+				if len(dialer.addresses) != 1 || dialer.addresses[0] != net.JoinHostPort(address, "443") {
+					t.Fatalf("private dial is not pinned to DNS answer: %v", dialer.addresses)
+				}
+			} else if len(dialer.addresses) != 0 {
+				t.Fatalf("default public client allowed private target: %v", dialer.addresses)
+			}
+			if transport.TLSClientConfig.InsecureSkipVerify || transport.Proxy != nil || client.CheckRedirect(&http.Request{}, nil) == nil {
+				t.Fatal("private mode weakened TLS, proxy or redirect rules")
+			}
+		}
+	}
+}
+
+func TestPrivateModelGatewayStillRejectsSpecialAddressesAndMixedDNS(t *testing.T) {
+	for _, raw := range []string{"127.0.0.1", "::1", "169.254.169.254", "fd00:ec2::254", "fe80::1", "224.0.0.1", "0.0.0.0", "100.64.0.1", "192.0.2.1", "fdbd::1%eth0"} {
+		dialer := &recordingDialer{}
+		resolver := staticResolver{addresses: []netip.Addr{netip.MustParseAddr("10.37.194.91"), netip.MustParseAddr(raw)}}
+		if _, err := controlledDialContext(resolver, dialer, true)(t.Context(), "tcp", "axonhub-cn.byted.bps.dev:443"); err == nil || len(dialer.addresses) != 0 {
+			t.Fatalf("unsafe DNS answer %s reached a dial: %v %v", raw, err, dialer.addresses)
+		}
+	}
+	for _, target := range []string{"axonhub-cn.byted.bps.dev:8443", "10.37.194.91:443", "AXONHUB-CN.BYTED.BPS.DEV:443"} {
+		dialer := &recordingDialer{}
+		if _, err := controlledDialContext(staticResolver{addresses: []netip.Addr{netip.MustParseAddr("10.37.194.91")}}, dialer, true)(t.Context(), "tcp", target); err == nil || len(dialer.addresses) != 0 {
+			t.Fatalf("invalid dial target accepted: %s", target)
+		}
+	}
 }

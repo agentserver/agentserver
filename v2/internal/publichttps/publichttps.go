@@ -1,8 +1,8 @@
 // Package publichttps provides the outbound HTTPS boundary used for
 // workspace-configured OIDC providers and LLM gateways. URL validation alone
 // is not enough for user-controlled hosts: the controlled dialer resolves DNS,
-// rejects every non-public answer, and dials one of the exact validated
-// addresses so a second resolver lookup cannot rebind the connection.
+// rejects disallowed answers (public-only by default), and dials one of the
+// exact validated addresses so a second resolver lookup cannot rebind it.
 package publichttps
 
 import (
@@ -75,6 +75,11 @@ type ClientConfig struct {
 	ResponseHeaderTimeout time.Duration
 	MaxIdleConns          int
 	MaxIdleConnsPerHost   int
+	// AllowPrivateAddresses is for deployment-approved model gateway traffic.
+	// It removes the RFC1918/ULA exclusion, not HTTPS/TLS verification or the
+	// rejection of loopback, link-local, metadata and other special-use IPs.
+	// Network policy remains responsible for permitted private destinations.
+	AllowPrivateAddresses bool
 }
 
 // ValidateURL accepts one canonical public HTTPS URL. Workspace-controlled
@@ -146,7 +151,7 @@ func NewClient(config ClientConfig) (*http.Client, error) {
 	}
 	transport := &http.Transport{
 		Proxy:                 nil,
-		DialContext:           controlledDialContext(config.Resolver, config.Dialer),
+		DialContext:           controlledDialContext(config.Resolver, config.Dialer, config.AllowPrivateAddresses),
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          config.MaxIdleConns,
 		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
@@ -166,7 +171,7 @@ func NewClient(config ClientConfig) (*http.Client, error) {
 	}, nil
 }
 
-func controlledDialContext(resolver Resolver, dialer Dialer) func(context.Context, string, string) (net.Conn, error) {
+func controlledDialContext(resolver Resolver, dialer Dialer, allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil || port != "443" || net.ParseIP(host) != nil || !validDNSName(host) {
@@ -177,7 +182,7 @@ func controlledDialContext(resolver Resolver, dialer Dialer) func(context.Contex
 			return nil, fmt.Errorf("resolve public HTTPS host: %w", err)
 		}
 		for _, candidate := range addresses {
-			if !IsPublicAddress(candidate) {
+			if !allowedDialAddress(candidate, allowPrivate) {
 				return nil, errors.New("public HTTPS DNS answer contains a non-public address")
 			}
 		}
@@ -194,6 +199,18 @@ func controlledDialContext(resolver Resolver, dialer Dialer) func(context.Contex
 		}
 		return nil, fmt.Errorf("dial public HTTPS host: %w", dialErr)
 	}
+}
+
+func allowedDialAddress(address netip.Addr, allowPrivate bool) bool {
+	if address.Zone() != "" {
+		return false
+	}
+	address = address.Unmap()
+	// AWS's IPv6 metadata endpoint is within ULA, but is not an LLM service.
+	if address == netip.MustParseAddr("fd00:ec2::254") {
+		return false
+	}
+	return IsPublicAddress(address) || (allowPrivate && address.IsPrivate())
 }
 
 // IsPublicAddress is exported so deployment and focused security tests can

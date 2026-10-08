@@ -92,6 +92,7 @@ jobs:
     timeout-minutes: 60
     env:
       GOTOOLCHAIN: go1.26.5
+      GOFLAGS: -p=2
       HARNESS_BASE: ghcr.io/agentserver/v2-harness@sha256:0c98d8836c28d9574a739e7fc4e47ab437781cb7a14d64a1980c58d27533fa18
       CLI_BASE: ghcr.io/agentserver/v2-managed-sandbox@sha256:a34aacaab4fec47457b8a426e8d48370600c8096563f062c4b2bb743fea86e08
     steps:

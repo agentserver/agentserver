@@ -28,9 +28,9 @@ tests exercise lists for both profiles and API-key create/reload, and the embedd
 test verifies that the built page includes the current Gateway contract and UI.
 
 The stale-bundle repair was deployed on 2026-10-08 as SG Helm revision 169,
-Chart `0.1.0-config.d21b9cf41bcc7`, publication run `37732003749`. The live index
-now references `platform-BVn6KCHd.js` instead of `platform-pJf3x_fy.js`; the live
-script includes the three current Gateway fields and the API-key UI. Existing
+Chart `0.1.0-config.d21b9cf41bcc7`, publication run `37732003749`. That release's
+index referenced `platform-BVn6KCHd.js` instead of `platform-pJf3x_fy.js`; its
+script included the three current Gateway fields and the API-key UI. Existing
 Gateway metadata was preserved. Frontend, service and PostgreSQL tests passed.
 No production Gateway or API key was created for validation; user-specific
 upstream authentication still requires the owner's real form submission.
@@ -47,3 +47,18 @@ Private connectivity is controlled by deployment egress. SG currently allows
 that exact TLS SNI. The DNS rule preserves resolution for existing public model
 gateways; it does not grant general private-network HTTPS access. Changing the
 LLM Gateway in the UI does not itself edit cluster network policy.
+
+The private-address change and `llmproxy-cn-axonhub-egress` policy were deployed
+on 2026-10-08 as SG revision 170, Chart `0.1.0-config.d86895a8eb584`, publication
+run `37738658639`. Cilium reported policy validation success. Restricted,
+credential-free probes in both llmproxy replicas reached AxonHub CN over IPv6
+and IPv4 with successful TLS verification, returning the expected HTTP 401
+without a bearer. This verifies network/TLS access, not the user's API key or
+model authorization. No Gateway settings or stored secrets were changed.
+
+The curl probe image requires an explicit numeric UID with Kubernetes'
+`runAsNonRoot` check. A first named-user probe did not start; replacement probes
+used UID/GID 65534, RuntimeDefault seccomp, no capabilities, no privilege
+escalation, read-only root filesystems and no credential mounts. Successful
+probes exited; their metadata remains until the normal Pod lifecycle replaces
+them. Do not restart an active proxy merely to remove diagnostic metadata.

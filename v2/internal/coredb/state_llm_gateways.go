@@ -14,6 +14,8 @@ import (
 )
 
 const (
+	LLMGatewayAuthOIDC       = "oidc"
+	LLMGatewayAuthAPIKey     = "api_key"
 	LLMGatewayStatusActive   = "active"
 	LLMGatewayStatusDisabled = "disabled"
 
@@ -34,26 +36,30 @@ const (
 )
 
 type WorkspaceLLMGateway struct {
-	ID              string
-	WorkspaceID     string
-	Name            string
-	ResponsesURL    string
-	OIDCIssuer      string
-	OIDCClientID    string
-	OIDCScopes      string
-	BearerTokenType string
-	DefaultModel    string
-	Status          string
-	Default         bool
-	Version         int64
-	CreatedBy       string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	GrantStatus     string
-	GrantExpiresAt  *time.Time
+	AuthType         string
+	APIKeyConfigured bool
+	ID               string
+	WorkspaceID      string
+	Name             string
+	ResponsesURL     string
+	OIDCIssuer       string
+	OIDCClientID     string
+	OIDCScopes       string
+	BearerTokenType  string
+	DefaultModel     string
+	Status           string
+	Default          bool
+	Version          int64
+	CreatedBy        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	GrantStatus      string
+	GrantExpiresAt   *time.Time
 }
 
 type CreateWorkspaceLLMGatewayCommand struct {
+	AuthType        string
+	SealedAPIKey    []byte `json:"-"`
 	ID              string
 	WorkspaceID     string
 	ActorID         string
@@ -73,6 +79,8 @@ type CreateWorkspaceLLMGatewayResult struct {
 }
 
 type UpdateWorkspaceLLMGatewayCommand struct {
+	AuthType        string
+	SealedAPIKey    []byte `json:"-"`
 	ID              string
 	WorkspaceID     string
 	ActorID         string
@@ -201,9 +209,11 @@ type ResolveUserRunLLMGatewayBindingCommand struct {
 }
 
 type LLMGatewayLiveAuthority struct {
-	Gateway WorkspaceLLMGateway
-	Grant   WorkspaceLLMGatewayGrant
-	Model   string
+	APIKeyUserID string
+	SealedAPIKey []byte `json:"-"`
+	Gateway      WorkspaceLLMGateway
+	Grant        WorkspaceLLMGatewayGrant
+	Model        string
 }
 
 // ReadWorkspaceLLMGatewayLiveAuthority is the retry boundary used after an
@@ -232,6 +242,7 @@ func (s *StateStore) CreateWorkspaceLLMGateway(
 	command CreateWorkspaceLLMGatewayCommand,
 ) (CreateWorkspaceLLMGatewayResult, error) {
 	const operation = "CreateWorkspaceLLMGateway"
+	command.AuthType = normalizedLLMGatewayAuthType(command.AuthType)
 	if err := validateCreateWorkspaceLLMGateway(command); err != nil {
 		return CreateWorkspaceLLMGatewayResult{}, commandError(ErrorInvalidArgument, operation, "llm_gateway", command.ID, err.Error())
 	}
@@ -244,6 +255,9 @@ func (s *StateStore) CreateWorkspaceLLMGateway(
 			return CreateWorkspaceLLMGatewayResult{}, err
 		}
 		if found {
+			if command.AuthType == LLMGatewayAuthAPIKey {
+				return CreateWorkspaceLLMGatewayResult{}, commandError(ErrorIdempotencyConflict, operation, "llm_gateway", command.ID, "API key gateway already exists; use the versioned update endpoint to rotate its key")
+			}
 			if !workspaceLLMGatewayMatchesCreate(existing, command) {
 				return CreateWorkspaceLLMGatewayResult{}, commandError(ErrorIdempotencyConflict, operation, "llm_gateway", command.ID, "gateway identity is already bound to different configuration")
 			}
@@ -262,15 +276,16 @@ WHERE workspace_id = $1 AND status = $2 AND is_default = TRUE`, s.table("workspa
 		query := fmt.Sprintf(`
 INSERT INTO %s
     (id, workspace_id, name, responses_url, oidc_issuer, oidc_client_id,
-     oidc_scopes, bearer_token_type, default_model, status, is_default, created_by)
+     oidc_scopes, bearer_token_type, default_model, status, is_default, created_by, auth_type, sealed_api_key)
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 RETURNING %s`, s.table("workspace_llm_gateways"), workspaceLLMGatewayColumns(""))
 		gateway, err := scanWorkspaceLLMGateway(transaction.QueryRow(
 			ctx, query, command.ID, command.WorkspaceID, command.Name,
 			command.ResponsesURL, command.OIDCIssuer, command.OIDCClientID,
 			command.OIDCScopes, command.BearerTokenType, command.DefaultModel,
 			LLMGatewayStatusActive, command.MakeDefault, command.ActorID,
+			command.AuthType, command.SealedAPIKey,
 		))
 		if err != nil {
 			var postgresError *pgconn.PgError
@@ -336,6 +351,7 @@ func (s *StateStore) UpdateWorkspaceLLMGateway(
 	command UpdateWorkspaceLLMGatewayCommand,
 ) (UpdateWorkspaceLLMGatewayResult, error) {
 	const operation = "UpdateWorkspaceLLMGateway"
+	command.AuthType = normalizedLLMGatewayAuthType(command.AuthType)
 	if err := validateUpdateWorkspaceLLMGateway(command); err != nil {
 		return UpdateWorkspaceLLMGatewayResult{}, commandError(ErrorInvalidArgument, operation, "llm_gateway", command.ID, err.Error())
 	}
@@ -359,6 +375,12 @@ func (s *StateStore) UpdateWorkspaceLLMGateway(
 		}
 		if gateway.Version != command.ExpectedVersion {
 			return UpdateWorkspaceLLMGatewayResult{}, versionConflict(operation, "llm_gateway", command.ID, gateway.Version)
+		}
+		if gateway.AuthType != command.AuthType {
+			return UpdateWorkspaceLLMGatewayResult{}, commandError(ErrorInvalidArgument, operation, "llm_gateway", command.ID, "gateway authentication type is immutable; create a new gateway")
+		}
+		if gateway.AuthType == LLMGatewayAuthAPIKey && gateway.ResponsesURL != command.ResponsesURL && len(command.SealedAPIKey) == 0 {
+			return UpdateWorkspaceLLMGatewayResult{}, commandError(ErrorInvalidArgument, operation, "llm_gateway", command.ID, "changing an API key gateway URL requires re-entering its API key")
 		}
 		if workspaceLLMGatewayMatchesUpdate(gateway, command) {
 			projected, found, readErr := s.readWorkspaceLLMGatewayByID(ctx, transaction, command.ID, command.WorkspaceID, command.ActorID, false)
@@ -390,6 +412,7 @@ SET name = $1,
     bearer_token_type = $6,
     default_model = $7,
     is_default = $8,
+    sealed_api_key = COALESCE($13, sealed_api_key),
     version = version + 1,
     updated_at = pg_catalog.clock_timestamp()
 WHERE id = $9 AND workspace_id = $10 AND version = $11 AND status = $12
@@ -399,6 +422,7 @@ RETURNING %s`, s.table("workspace_llm_gateways"), workspaceLLMGatewayColumns("")
 			command.OIDCClientID, command.OIDCScopes, command.BearerTokenType,
 			command.DefaultModel, command.MakeDefault, command.ID, command.WorkspaceID,
 			command.ExpectedVersion, LLMGatewayStatusActive,
+			command.SealedAPIKey,
 		))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return UpdateWorkspaceLLMGatewayResult{}, versionConflict(operation, "llm_gateway", command.ID, command.ExpectedVersion)
@@ -762,6 +786,7 @@ func (s *StateStore) DisableWorkspaceLLMGateway(
 UPDATE %s
 SET status = $1,
     is_default = FALSE,
+    sealed_api_key = NULL,
     version = version + 1,
     updated_at = pg_catalog.clock_timestamp()
 WHERE id = $2 AND workspace_id = $3 AND version = $4 AND status = $5
@@ -816,17 +841,19 @@ WHERE run.workspace_id = $1 AND run.session_id = $2
 			return RunLLMGatewayBinding{}, databaseError(operation+" read existing binding", err)
 		}
 		query := fmt.Sprintf(`
-SELECT gateway.id::text, gateway.version, grant_state.user_id::text,
+SELECT gateway.id::text, gateway.version, $2::uuid::text,
        gateway.default_model
 FROM %s AS gateway
-JOIN %s AS grant_state
+LEFT JOIN %s AS grant_state
   ON grant_state.gateway_id = gateway.id
  AND grant_state.workspace_id = gateway.workspace_id
  AND grant_state.user_id = $2
  AND grant_state.status = $3
 WHERE gateway.workspace_id = $1
   AND gateway.status = $4
-  AND gateway.is_default = TRUE`, s.table("workspace_llm_gateways"), s.table("workspace_llm_gateway_grants"))
+  AND gateway.is_default = TRUE
+  AND ((gateway.auth_type = 'api_key' AND gateway.sealed_api_key IS NOT NULL)
+       OR (gateway.auth_type = 'oidc' AND grant_state.user_id IS NOT NULL))`, s.table("workspace_llm_gateways"), s.table("workspace_llm_gateway_grants"))
 		if err := transaction.QueryRow(
 			ctx, query, command.WorkspaceID, command.ActorID,
 			LLMGatewayGrantStatusActive, LLMGatewayStatusActive,
@@ -845,6 +872,11 @@ func (s *StateStore) requireCreateRunLLMGateway(
 	transaction pgx.Tx,
 	command CreateRunCommand,
 ) error {
+	if _, found, err := s.readAPIKeyLLMGatewayAuthority(ctx, transaction, "CreateRun", command.WorkspaceID, command.LLMGateway, true); err != nil {
+		return err
+	} else if found {
+		return nil
+	}
 	query := fmt.Sprintf(`
 SELECT 1
 FROM %s AS gateway
@@ -858,6 +890,7 @@ WHERE gateway.id = $1
   AND gateway.version = $3
   AND gateway.status = $6
   AND gateway.default_model = $5
+  AND gateway.auth_type = 'oidc'
 FOR SHARE OF gateway, grant_state`, s.table("workspace_llm_gateways"), s.table("workspace_llm_gateway_grants"))
 	var marker int
 	if err := transaction.QueryRow(
@@ -1033,6 +1066,11 @@ func (s *StateStore) readWorkspaceLLMGatewayLiveAuthority(
 	operation, workspaceID string,
 	binding RunLLMGatewayBinding,
 ) (LLMGatewayLiveAuthority, error) {
+	if authority, found, err := s.readAPIKeyLLMGatewayAuthority(ctx, transaction, operation, workspaceID, binding, false); err != nil {
+		return LLMGatewayLiveAuthority{}, err
+	} else if found {
+		return authority, nil
+	}
 	query := fmt.Sprintf(`
 SELECT %s, %s
 FROM %s AS gateway
@@ -1053,7 +1091,8 @@ WHERE gateway.id = $1
   AND gateway.workspace_id = $2
   AND gateway.version = $3
   AND gateway.default_model = $5
-  AND gateway.status = $6`,
+  AND gateway.status = $6
+  AND gateway.auth_type = 'oidc'`,
 		workspaceLLMGatewayColumns("gateway"), workspaceLLMGatewayGrantColumns("grant_state"),
 		s.table("workspace_llm_gateways"), s.table("workspace_llm_gateway_grants"),
 		s.table("workspaces"), s.table("workspace_members"), s.table("users"),
@@ -1085,7 +1124,8 @@ func workspaceLLMGatewayColumns(alias string) string {
 		prefix + "responses_url, " + prefix + "oidc_issuer, " + prefix + "oidc_client_id, " +
 		prefix + "oidc_scopes, " + prefix + "bearer_token_type, " + prefix + "default_model, " +
 		prefix + "status, " + prefix + "is_default, " + prefix + "version, " +
-		prefix + "created_by::text, " + prefix + "created_at, " + prefix + "updated_at"
+		prefix + "created_by::text, " + prefix + "created_at, " + prefix + "updated_at, " +
+		prefix + "auth_type, (" + prefix + "sealed_api_key IS NOT NULL)"
 }
 
 func scanWorkspaceLLMGateway(row llmGatewayRow) (WorkspaceLLMGateway, error) {
@@ -1095,6 +1135,7 @@ func scanWorkspaceLLMGateway(row llmGatewayRow) (WorkspaceLLMGateway, error) {
 		&value.OIDCIssuer, &value.OIDCClientID, &value.OIDCScopes,
 		&value.BearerTokenType, &value.DefaultModel, &value.Status, &value.Default,
 		&value.Version, &value.CreatedBy, &value.CreatedAt, &value.UpdatedAt,
+		&value.AuthType, &value.APIKeyConfigured,
 	)
 	return value, err
 }
@@ -1106,6 +1147,7 @@ func scanWorkspaceLLMGatewayWithGrant(row llmGatewayRow) (WorkspaceLLMGateway, e
 		&value.OIDCIssuer, &value.OIDCClientID, &value.OIDCScopes,
 		&value.BearerTokenType, &value.DefaultModel, &value.Status, &value.Default,
 		&value.Version, &value.CreatedBy, &value.CreatedAt, &value.UpdatedAt,
+		&value.AuthType, &value.APIKeyConfigured,
 		&value.GrantStatus, &value.GrantExpiresAt,
 	)
 	return value, err
@@ -1142,6 +1184,7 @@ func scanWorkspaceLLMGatewayLiveAuthority(row llmGatewayRow) (LLMGatewayLiveAuth
 		&value.Gateway.OIDCScopes, &value.Gateway.BearerTokenType, &value.Gateway.DefaultModel,
 		&value.Gateway.Status, &value.Gateway.Default, &value.Gateway.Version,
 		&value.Gateway.CreatedBy, &value.Gateway.CreatedAt, &value.Gateway.UpdatedAt,
+		&value.Gateway.AuthType, &value.Gateway.APIKeyConfigured,
 		&value.Grant.ID, &value.Grant.GatewayID, &value.Grant.WorkspaceID,
 		&value.Grant.UserID, &value.Grant.OIDCIssuer, &value.Grant.OIDCSubject,
 		&value.Grant.Status, &value.Grant.SealedTokenSet, &value.Grant.BearerExpiresAt,
@@ -1186,6 +1229,10 @@ func scanWorkspaceLLMGatewayAuthTransaction(row llmGatewayRow) (WorkspaceLLMGate
 }
 
 func validateCreateWorkspaceLLMGateway(command CreateWorkspaceLLMGatewayCommand) error {
+	return validateWorkspaceLLMGatewayConfiguration(command, true)
+}
+
+func validateWorkspaceLLMGatewayConfiguration(command CreateWorkspaceLLMGatewayCommand, requireKey bool) error {
 	for field, value := range map[string]string{"id": command.ID, "workspace_id": command.WorkspaceID, "actor_id": command.ActorID} {
 		if err := validateUUID(field, value); err != nil {
 			return err
@@ -1196,8 +1243,7 @@ func validateCreateWorkspaceLLMGateway(command CreateWorkspaceLLMGatewayCommand)
 		maximum int
 	}{
 		"name": {command.Name, 128}, "responses_url": {command.ResponsesURL, 4096},
-		"oidc_issuer": {command.OIDCIssuer, 2048}, "oidc_client_id": {command.OIDCClientID, 512},
-		"oidc_scopes": {command.OIDCScopes, 2048}, "default_model": {command.DefaultModel, 256},
+		"default_model": {command.DefaultModel, 256},
 	} {
 		if err := validateBoundedText(field, bounded.value, bounded.maximum); err != nil {
 			return err
@@ -1206,17 +1252,41 @@ func validateCreateWorkspaceLLMGateway(command CreateWorkspaceLLMGatewayCommand)
 	if command.BearerTokenType != LLMGatewayBearerIDToken && command.BearerTokenType != LLMGatewayBearerAccessToken {
 		return errors.New("bearer_token_type must be id_token or access_token")
 	}
+	switch normalizedLLMGatewayAuthType(command.AuthType) {
+	case LLMGatewayAuthOIDC:
+		if len(command.SealedAPIKey) != 0 {
+			return errors.New("OIDC gateway cannot store an API key")
+		}
+		for name, field := range map[string]struct {
+			value   string
+			maximum int
+		}{"oidc_issuer": {command.OIDCIssuer, 2048}, "oidc_client_id": {command.OIDCClientID, 512}, "oidc_scopes": {command.OIDCScopes, 2048}} {
+			if err := validateBoundedText(name, field.value, field.maximum); err != nil {
+				return err
+			}
+		}
+	case LLMGatewayAuthAPIKey:
+		if command.OIDCIssuer != "" || command.OIDCClientID != "" || command.OIDCScopes != "" || command.BearerTokenType != LLMGatewayBearerAccessToken {
+			return errors.New("API key gateway cannot include OIDC settings")
+		}
+		if (requireKey || len(command.SealedAPIKey) != 0) && (len(command.SealedAPIKey) < 29 || len(command.SealedAPIKey) > 16384) {
+			return errors.New("sealed API key is required and must be bounded")
+		}
+	default:
+		return errors.New("unsupported gateway authentication type")
+	}
 	return nil
 }
 
 func validateUpdateWorkspaceLLMGateway(command UpdateWorkspaceLLMGatewayCommand) error {
-	if err := validateCreateWorkspaceLLMGateway(CreateWorkspaceLLMGatewayCommand{
+	if err := validateWorkspaceLLMGatewayConfiguration(CreateWorkspaceLLMGatewayCommand{
+		AuthType: command.AuthType, SealedAPIKey: command.SealedAPIKey,
 		ID: command.ID, WorkspaceID: command.WorkspaceID, ActorID: command.ActorID,
 		Name: command.Name, ResponsesURL: command.ResponsesURL, OIDCIssuer: command.OIDCIssuer,
 		OIDCClientID: command.OIDCClientID, OIDCScopes: command.OIDCScopes,
 		BearerTokenType: command.BearerTokenType, DefaultModel: command.DefaultModel,
 		MakeDefault: command.MakeDefault,
-	}); err != nil {
+	}, false); err != nil {
 		return err
 	}
 	if command.ExpectedVersion < 1 || command.ExpectedVersion > maxSafeJSONInteger {
@@ -1299,7 +1369,7 @@ func validateRunLLMGatewayBinding(binding RunLLMGatewayBinding) error {
 }
 
 func workspaceLLMGatewayMatchesCreate(gateway WorkspaceLLMGateway, command CreateWorkspaceLLMGatewayCommand) bool {
-	return gateway.ID == command.ID && gateway.WorkspaceID == command.WorkspaceID &&
+	return normalizedLLMGatewayAuthType(gateway.AuthType) == normalizedLLMGatewayAuthType(command.AuthType) && gateway.ID == command.ID && gateway.WorkspaceID == command.WorkspaceID &&
 		gateway.Name == command.Name && gateway.ResponsesURL == command.ResponsesURL &&
 		gateway.OIDCIssuer == command.OIDCIssuer && gateway.OIDCClientID == command.OIDCClientID &&
 		gateway.OIDCScopes == command.OIDCScopes && gateway.BearerTokenType == command.BearerTokenType &&
@@ -1308,7 +1378,7 @@ func workspaceLLMGatewayMatchesCreate(gateway WorkspaceLLMGateway, command Creat
 }
 
 func workspaceLLMGatewayMatchesUpdate(gateway WorkspaceLLMGateway, command UpdateWorkspaceLLMGatewayCommand) bool {
-	return gateway.ID == command.ID && gateway.WorkspaceID == command.WorkspaceID &&
+	return len(command.SealedAPIKey) == 0 && normalizedLLMGatewayAuthType(gateway.AuthType) == normalizedLLMGatewayAuthType(command.AuthType) && gateway.ID == command.ID && gateway.WorkspaceID == command.WorkspaceID &&
 		gateway.Name == command.Name && gateway.ResponsesURL == command.ResponsesURL &&
 		gateway.OIDCIssuer == command.OIDCIssuer && gateway.OIDCClientID == command.OIDCClientID &&
 		gateway.OIDCScopes == command.OIDCScopes && gateway.BearerTokenType == command.BearerTokenType &&

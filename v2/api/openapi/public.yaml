@@ -1128,40 +1128,273 @@
         }
       },
       "CreateWorkspaceLLMGatewayRequest": {
-        "type": "object", "additionalProperties": false,
-        "required": ["gatewayId", "name", "responsesUrl", "oidcIssuer", "oidcClientId", "oidcScopes", "bearerTokenType", "defaultModel", "makeDefault"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "gatewayId",
+          "name",
+          "defaultModel",
+          "makeDefault"
+        ],
         "properties": {
-          "gatewayId": {"$ref": "#/components/schemas/UUID"},
-          "name": {"type": "string", "minLength": 1, "maxLength": 128},
-          "responsesUrl": {"type": "string", "format": "uri", "maxLength": 4096, "pattern": "^https://[^/?#:]+(?:\\:443)?/v1/responses$"},
-          "oidcIssuer": {"type": "string", "format": "uri", "minLength": 8, "maxLength": 2048},
-          "oidcClientId": {"type": "string", "minLength": 1, "maxLength": 512},
-          "oidcScopes": {"type": "array", "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-          "bearerTokenType": {"enum": ["", "id_token", "access_token"]},
-          "defaultModel": {"type": "string", "minLength": 1, "maxLength": 256},
-          "makeDefault": {"type": "boolean"}
-        }
+          "authType": {
+            "enum": [
+              "oidc",
+              "api_key"
+            ],
+            "default": "oidc",
+            "description": "Immutable authentication mode; omitted means per-user OAuth."
+          },
+          "baseUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 4096,
+            "description": "API key mode only. Public HTTPS API prefix (e.g. https://api.example.com/v1). An origin alone uses /v1; /responses is appended."
+          },
+          "apiKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192,
+            "pattern": "^[!-~]+$",
+            "writeOnly": true,
+            "x-agentserver-sensitive": true,
+            "description": "Required in API key mode; encrypted at rest and never returned."
+          },
+          "gatewayId": {
+            "$ref": "#/components/schemas/UUID"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "responsesUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 4096,
+            "pattern": "^https://[^/?#:]+(?:\\:443)?/v1/responses$"
+          },
+          "oidcIssuer": {
+            "type": "string",
+            "format": "uri",
+            "minLength": 8,
+            "maxLength": 2048
+          },
+          "oidcClientId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "oidcScopes": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "bearerTokenType": {
+            "enum": [
+              "",
+              "id_token",
+              "access_token"
+            ]
+          },
+          "defaultModel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "makeDefault": {
+            "type": "boolean"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "authType"
+              ],
+              "properties": {
+                "authType": {
+                  "const": "api_key"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "baseUrl",
+                "apiKey"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "responsesUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "oidcIssuer"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "oidcClientId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "oidcScopes"
+                    ]
+                  }
+                ]
+              }
+            },
+            "else": {
+              "required": [
+                "responsesUrl",
+                "oidcIssuer",
+                "oidcClientId",
+                "oidcScopes",
+                "bearerTokenType"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "apiKey"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
       },
       "WorkspaceLLMGatewayState": {
-        "type": "object", "additionalProperties": false,
-        "required": ["gatewayId", "workspaceId", "name", "responsesUrl", "oidcIssuer", "oidcClientId", "oidcScopes", "bearerTokenType", "defaultModel", "status", "default", "version", "grantStatus", "createdAt", "updatedAt"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "authType",
+          "baseUrl",
+          "apiKeyConfigured",
+          "gatewayId",
+          "workspaceId",
+          "name",
+          "responsesUrl",
+          "oidcIssuer",
+          "oidcClientId",
+          "oidcScopes",
+          "bearerTokenType",
+          "defaultModel",
+          "status",
+          "default",
+          "version",
+          "grantStatus",
+          "createdAt",
+          "updatedAt"
+        ],
         "properties": {
-          "gatewayId": {"$ref": "#/components/schemas/UUID"},
-          "workspaceId": {"$ref": "#/components/schemas/UUID"},
-          "name": {"type": "string", "minLength": 1, "maxLength": 128},
-          "responsesUrl": {"type": "string", "format": "uri", "maxLength": 4096},
-          "oidcIssuer": {"type": "string", "format": "uri", "maxLength": 2048},
-          "oidcClientId": {"type": "string", "minLength": 1, "maxLength": 512},
-          "oidcScopes": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-          "bearerTokenType": {"enum": ["id_token", "access_token"]},
-          "defaultModel": {"type": "string", "minLength": 1, "maxLength": 256},
-          "status": {"enum": ["active", "disabled"]},
-          "default": {"type": "boolean"},
-          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
-          "grantStatus": {"enum": ["", "active", "reauth_required", "revoked"]},
-          "grantExpiresAt": {"type": "string", "format": "date-time"},
-          "createdAt": {"type": "string", "format": "date-time"},
-          "updatedAt": {"type": "string", "format": "date-time"}
+          "authType": {
+            "enum": [
+              "oidc",
+              "api_key"
+            ]
+          },
+          "baseUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 4096
+          },
+          "apiKeyConfigured": {
+            "type": "boolean",
+            "description": "Whether a workspace API key is stored. Never contains key material."
+          },
+          "gatewayId": {
+            "$ref": "#/components/schemas/UUID"
+          },
+          "workspaceId": {
+            "$ref": "#/components/schemas/UUID"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "responsesUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 4096
+          },
+          "oidcIssuer": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "oidcClientId": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "oidcScopes": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "bearerTokenType": {
+            "enum": [
+              "id_token",
+              "access_token"
+            ]
+          },
+          "defaultModel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "status": {
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "default": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "grantStatus": {
+            "enum": [
+              "",
+              "active",
+              "reauth_required",
+              "revoked"
+            ]
+          },
+          "grantExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "CreateWorkspaceLLMGatewayResponse": {
@@ -1169,19 +1402,155 @@
         "properties": {"gateway": {"$ref": "#/components/schemas/WorkspaceLLMGatewayState"}, "created": {"type": "boolean"}}
       },
       "UpdateWorkspaceLLMGatewayRequest": {
-        "type": "object", "additionalProperties": false,
-        "required": ["name", "responsesUrl", "oidcIssuer", "oidcClientId", "oidcScopes", "bearerTokenType", "defaultModel", "makeDefault", "expectedVersion"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "defaultModel",
+          "makeDefault",
+          "expectedVersion"
+        ],
         "properties": {
-          "name": {"type": "string", "minLength": 1, "maxLength": 128},
-          "responsesUrl": {"type": "string", "format": "uri", "maxLength": 4096, "pattern": "^https://[^/?#:]+(?:\\:443)?/v1/responses$"},
-          "oidcIssuer": {"type": "string", "format": "uri", "minLength": 8, "maxLength": 2048},
-          "oidcClientId": {"type": "string", "minLength": 1, "maxLength": 512},
-          "oidcScopes": {"type": "array", "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
-          "bearerTokenType": {"enum": ["id_token", "access_token"]},
-          "defaultModel": {"type": "string", "minLength": 1, "maxLength": 256},
-          "makeDefault": {"type": "boolean"},
-          "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
-        }
+          "authType": {
+            "enum": [
+              "oidc",
+              "api_key"
+            ],
+            "default": "oidc",
+            "description": "Immutable authentication mode; omitted means per-user OAuth."
+          },
+          "baseUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 4096,
+            "description": "API key mode only. Public HTTPS API prefix (e.g. https://api.example.com/v1). An origin alone uses /v1; /responses is appended."
+          },
+          "apiKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192,
+            "pattern": "^[!-~]+$",
+            "writeOnly": true,
+            "x-agentserver-sensitive": true,
+            "description": "Omit to retain the key. Supply to rotate. Empty/null invalid; required when baseUrl changes."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "responsesUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 4096,
+            "pattern": "^https://[^/?#:]+(?:\\:443)?/v1/responses$"
+          },
+          "oidcIssuer": {
+            "type": "string",
+            "format": "uri",
+            "minLength": 8,
+            "maxLength": 2048
+          },
+          "oidcClientId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "oidcScopes": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "bearerTokenType": {
+            "enum": [
+              "id_token",
+              "access_token"
+            ]
+          },
+          "defaultModel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "makeDefault": {
+            "type": "boolean"
+          },
+          "expectedVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "authType"
+              ],
+              "properties": {
+                "authType": {
+                  "const": "api_key"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "baseUrl"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "responsesUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "oidcIssuer"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "oidcClientId"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "oidcScopes"
+                    ]
+                  }
+                ]
+              }
+            },
+            "else": {
+              "required": [
+                "responsesUrl",
+                "oidcIssuer",
+                "oidcClientId",
+                "oidcScopes",
+                "bearerTokenType"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "baseUrl"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "apiKey"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
       },
       "UpdateWorkspaceLLMGatewayResponse": {
         "type": "object", "additionalProperties": false, "required": ["gateway", "changed"],

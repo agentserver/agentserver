@@ -34,34 +34,40 @@ func DisableLLMGatewayPath(workspaceID, gatewayID string) string {
 }
 
 type CreateWorkspaceLLMGatewayRequest struct {
+	AuthType        string   `json:"authType,omitempty"`
+	BaseURL         string   `json:"baseUrl,omitempty"`
+	APIKey          string   `json:"apiKey,omitempty"`
 	GatewayID       string   `json:"gatewayId"`
 	Name            string   `json:"name"`
-	ResponsesURL    string   `json:"responsesUrl"`
-	OIDCIssuer      string   `json:"oidcIssuer"`
-	OIDCClientID    string   `json:"oidcClientId"`
-	OIDCScopes      []string `json:"oidcScopes"`
-	BearerTokenType string   `json:"bearerTokenType"`
+	ResponsesURL    string   `json:"responsesUrl,omitempty"`
+	OIDCIssuer      string   `json:"oidcIssuer,omitempty"`
+	OIDCClientID    string   `json:"oidcClientId,omitempty"`
+	OIDCScopes      []string `json:"oidcScopes,omitempty"`
+	BearerTokenType string   `json:"bearerTokenType,omitempty"`
 	DefaultModel    string   `json:"defaultModel"`
 	MakeDefault     bool     `json:"makeDefault"`
 }
 
 type WorkspaceLLMGatewayState struct {
-	GatewayID       string     `json:"gatewayId"`
-	WorkspaceID     string     `json:"workspaceId"`
-	Name            string     `json:"name"`
-	ResponsesURL    string     `json:"responsesUrl"`
-	OIDCIssuer      string     `json:"oidcIssuer"`
-	OIDCClientID    string     `json:"oidcClientId"`
-	OIDCScopes      []string   `json:"oidcScopes"`
-	BearerTokenType string     `json:"bearerTokenType"`
-	DefaultModel    string     `json:"defaultModel"`
-	Status          string     `json:"status"`
-	Default         bool       `json:"default"`
-	Version         int64      `json:"version"`
-	GrantStatus     string     `json:"grantStatus"`
-	GrantExpiresAt  *time.Time `json:"grantExpiresAt,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	AuthType         string     `json:"authType"`
+	BaseURL          string     `json:"baseUrl"`
+	APIKeyConfigured bool       `json:"apiKeyConfigured"`
+	GatewayID        string     `json:"gatewayId"`
+	WorkspaceID      string     `json:"workspaceId"`
+	Name             string     `json:"name"`
+	ResponsesURL     string     `json:"responsesUrl"`
+	OIDCIssuer       string     `json:"oidcIssuer"`
+	OIDCClientID     string     `json:"oidcClientId"`
+	OIDCScopes       []string   `json:"oidcScopes"`
+	BearerTokenType  string     `json:"bearerTokenType"`
+	DefaultModel     string     `json:"defaultModel"`
+	Status           string     `json:"status"`
+	Default          bool       `json:"default"`
+	Version          int64      `json:"version"`
+	GrantStatus      string     `json:"grantStatus"`
+	GrantExpiresAt   *time.Time `json:"grantExpiresAt,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 type CreateWorkspaceLLMGatewayResponse struct {
@@ -70,12 +76,15 @@ type CreateWorkspaceLLMGatewayResponse struct {
 }
 
 type UpdateWorkspaceLLMGatewayRequest struct {
+	AuthType        string   `json:"authType,omitempty"`
+	BaseURL         string   `json:"baseUrl,omitempty"`
+	APIKey          *string  `json:"apiKey,omitempty"`
 	Name            string   `json:"name"`
-	ResponsesURL    string   `json:"responsesUrl"`
-	OIDCIssuer      string   `json:"oidcIssuer"`
-	OIDCClientID    string   `json:"oidcClientId"`
-	OIDCScopes      []string `json:"oidcScopes"`
-	BearerTokenType string   `json:"bearerTokenType"`
+	ResponsesURL    string   `json:"responsesUrl,omitempty"`
+	OIDCIssuer      string   `json:"oidcIssuer,omitempty"`
+	OIDCClientID    string   `json:"oidcClientId,omitempty"`
+	OIDCScopes      []string `json:"oidcScopes,omitempty"`
+	BearerTokenType string   `json:"bearerTokenType,omitempty"`
 	DefaultModel    string   `json:"defaultModel"`
 	MakeDefault     bool     `json:"makeDefault"`
 	ExpectedVersion int64    `json:"expectedVersion"`

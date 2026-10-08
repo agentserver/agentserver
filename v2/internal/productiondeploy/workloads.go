@@ -3,6 +3,7 @@ package productiondeploy
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -89,6 +90,9 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 	}
 	if managedExecutionActive(config.Document.Managed) {
 		for _, profile := range config.ManagedSandboxProfiles {
+			if profile.Document.Gateway.External {
+				continue
+			}
 			sandbox, err := renderSandboxDeployment(context, profile)
 			if err != nil {
 				return nil, err
@@ -241,8 +245,15 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	materialProfile := materialProfileCore
 	if managedExecutionActive(document.Managed) {
 		materialProfile = materialProfileCoreManaged
+		if document.Managed.Provider == "k8s" {
+			materialProfile = materialProfileCoreManagedK8s
+		}
 		if managedEgressAuthorizerEnabled(document.Managed) {
-			materialProfile = materialProfileCoreManagedWebhook
+			if document.Managed.Provider == "k8s" {
+				materialProfile = materialProfileCoreManagedK8sWebhook
+			} else {
+				materialProfile = materialProfileCoreManagedWebhook
+			}
 		}
 	}
 	material, err := secretMaterialVolume("material", document.Secrets.Core, materialProfile, groupReadableSecretMode)
@@ -317,6 +328,12 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_PROFILE_CATALOG", managedSandboxCatalog),
 		)
 		environment = append(environment, managedCredentialScopeEnvironment(document.Managed)...)
+		if document.Managed.Provider == "k8s" {
+			environment = append(environment, secretEnvironment("AGENTSERVER_V2_EXTERNAL_MANAGED_SANDBOX_TOKEN", document.Secrets.Core, "external-managed-sandbox-token"))
+		}
+		if document.Managed.Provider == "k8s" && slices.ContainsFunc(config.ManagedSandboxProfiles, func(p LoadedManagedSandboxProfile) bool { return p.Document.Gateway.External }) {
+			environment = append(environment, valueEnvironment("AGENTSERVER_V2_CORE_EXTERNAL_TLS", "true"))
+		}
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			environment = append(environment,
 				valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID", spiffeIdentity(config, egressComponent)),
@@ -405,6 +422,7 @@ func managedSandboxGatewayProfilesJSON(config LoadedConfig) (string, error) {
 		EnvironmentID            string `json:"environmentId"`
 		SandboxGatewayURL        string `json:"sandboxGatewayUrl"`
 		SandboxGatewayServerName string `json:"sandboxGatewayServerName"`
+		ExternalTLS              bool   `json:"externalTls,omitempty"`
 		SandboxTTL               string `json:"sandboxTtl"`
 		ActivityTTL              string `json:"activityTtl"`
 	}
@@ -417,6 +435,7 @@ func managedSandboxGatewayProfilesJSON(config LoadedConfig) (string, error) {
 			EnvironmentID:            profile.Environment.EnvironmentID,
 			SandboxGatewayURL:        managedSandboxGatewayOrigin(profile.Gateway),
 			SandboxGatewayServerName: profile.Gateway.ServerName,
+			ExternalTLS:              profile.Gateway.External,
 			SandboxTTL:               profile.Environment.SandboxTTL, ActivityTTL: profile.Environment.ActivityTTL,
 		})
 	}

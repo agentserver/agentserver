@@ -35,60 +35,62 @@ import (
 )
 
 const (
-	coreListenAddressEnvironment            = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
-	coreTLSCertificateEnvironment           = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
-	coreTLSKeyEnvironment                   = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
-	coreClientCAEnvironment                 = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
-	coreGatewayIdentityEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
-	coreHarnessPoolIdentityEnvironment      = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
-	coreSandboxGatewayIdentityEnvironment   = "AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID"
-	coreSandboxGatewayIdentitiesEnvironment = "AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_IDS"
-	coreEgressAuthorizerIdentityEnvironment = "AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID"
-	coreBrowserIdentityEnvironment          = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
-	corePlatformIdentityEnvironment         = "AGENTSERVER_V2_PLATFORM_GATEWAY_SPIFFE_ID"
-	coreHydraIntrospectionEnvironment       = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
-	coreHydraAdminEnvironment               = "AGENTSERVER_V2_HYDRA_ADMIN_URL"
-	coreHydraPublicOriginEnvironment        = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
-	coreHydraIssuerEnvironment              = "AGENTSERVER_V2_HYDRA_ISSUER"
-	coreHydraPlatformClientEnvironment      = "AGENTSERVER_V2_HYDRA_PLATFORM_CLIENT_ID"
-	coreHydraBrowserClientEnvironment       = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
-	coreHydraCAEnvironment                  = "AGENTSERVER_V2_HYDRA_CA_FILE"
-	coreHydraServerNameEnvironment          = "AGENTSERVER_V2_HYDRA_SERVER_NAME"
-	coreHydraInsecureHTTPEnvironment        = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
-	coreExternalOIDCIssuerEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
-	coreExternalOIDCSubjectEnvironment      = "AGENTSERVER_V2_EXTERNAL_OIDC_SUBJECT"
-	coreExternalOIDCClientEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID"
-	coreExternalOIDCSecretEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET"
-	coreExternalOIDCRedirectEnvironment     = "AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL"
-	coreExternalOIDCInsecureEnvironment     = "AGENTSERVER_V2_EXTERNAL_OIDC_ALLOW_INSECURE_HTTP"
-	coreLoginTransactionKeyEnvironment      = "AGENTSERVER_V2_LOGIN_TRANSACTION_KEY"
-	coreRunCursorKeyEnvironment             = "AGENTSERVER_V2_RUN_CURSOR_KEY"
-	coreDevPromptObjectRootEnvironment      = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
-	coreRunPolicyVersionEnvironment         = "AGENTSERVER_V2_RUN_POLICY_VERSION"
-	coreRunAllowedToolsEnvironment          = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
-	coreLLMProxyIdentityEnvironment         = "AGENTSERVER_V2_LLMPROXY_SPIFFE_ID"
-	coreCapabilityIssuerEnvironment         = "AGENTSERVER_V2_RUN_CAPABILITY_ISSUER"
-	coreCapabilityKeyIDEnvironment          = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_ID"
-	coreCapabilityPrivateKeyEnvironment     = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_FILE"
-	coreCapabilityKeyringEnvironment        = "AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE"
-	coreProductionExecutorEnvironment       = "AGENTSERVER_V2_EXECUTOR_ID"
-	coreLLMGatewaySealingKeyringEnvironment = "AGENTSERVER_V2_LLM_GATEWAY_SEALING_KEYRING_FILE"
-	coreLLMGatewayRedirectURLEnvironment    = "AGENTSERVER_V2_LLM_GATEWAY_REDIRECT_URL"
-	coreMaxRunDurationEnvironment           = "AGENTSERVER_V2_MAX_RUN_DURATION"
-	coreMaxApprovalTTLEnvironment           = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
-	coreCapabilityExpiryGraceEnvironment    = "AGENTSERVER_V2_RUN_CAPABILITY_EXPIRY_GRACE"
-	coreEnrollmentKeyEnvironment            = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_KEY_FILE"
-	coreEnrollmentTTLEnvironment            = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_TTL"
-	coreManagedExecutorEnabledEnvironment   = "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED"
-	coreTAEWebhookRequiredEnvironment       = "AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED"
-	coreEgressPlaceholderKeyringEnvironment = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE"
-	coreCredentialSealingKeyringEnvironment = "AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE"
-	coreManagedTAEPSMEnvironment            = "AGENTSERVER_V2_MANAGED_TAE_PSM"
-	coreManagedSandboxProfilesEnvironment   = "AGENTSERVER_V2_MANAGED_SANDBOX_PROFILE_CATALOG"
-	coreLarkDeviceAppIDEnvironment          = "AGENTSERVER_V2_LARK_DEVICE_APP_ID"
-	coreLarkDeviceAppSecretEnvironment      = "AGENTSERVER_V2_LARK_DEVICE_APP_SECRET"
-	coreLarkDeviceScopesEnvironment         = "AGENTSERVER_V2_LARK_DEVICE_SCOPES"
-	coreByteCloudDeviceAPIEnvironment       = "AGENTSERVER_V2_BYTECLOUD_DEVICE_API_BASE_URL"
+	coreListenAddressEnvironment               = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
+	coreTLSCertificateEnvironment              = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
+	coreTLSKeyEnvironment                      = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
+	coreClientCAEnvironment                    = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
+	coreGatewayIdentityEnvironment             = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
+	coreHarnessPoolIdentityEnvironment         = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
+	coreSandboxGatewayIdentityEnvironment      = "AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID"
+	coreSandboxGatewayIdentitiesEnvironment    = "AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_IDS"
+	coreEgressAuthorizerIdentityEnvironment    = "AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID"
+	coreBrowserIdentityEnvironment             = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
+	corePlatformIdentityEnvironment            = "AGENTSERVER_V2_PLATFORM_GATEWAY_SPIFFE_ID"
+	coreHydraIntrospectionEnvironment          = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
+	coreHydraAdminEnvironment                  = "AGENTSERVER_V2_HYDRA_ADMIN_URL"
+	coreHydraPublicOriginEnvironment           = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
+	coreHydraIssuerEnvironment                 = "AGENTSERVER_V2_HYDRA_ISSUER"
+	coreHydraPlatformClientEnvironment         = "AGENTSERVER_V2_HYDRA_PLATFORM_CLIENT_ID"
+	coreHydraBrowserClientEnvironment          = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
+	coreHydraCAEnvironment                     = "AGENTSERVER_V2_HYDRA_CA_FILE"
+	coreHydraServerNameEnvironment             = "AGENTSERVER_V2_HYDRA_SERVER_NAME"
+	coreHydraInsecureHTTPEnvironment           = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
+	coreExternalOIDCIssuerEnvironment          = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
+	coreExternalOIDCSubjectEnvironment         = "AGENTSERVER_V2_EXTERNAL_OIDC_SUBJECT"
+	coreExternalOIDCClientEnvironment          = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID"
+	coreExternalOIDCSecretEnvironment          = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET"
+	coreExternalOIDCRedirectEnvironment        = "AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL"
+	coreExternalOIDCInsecureEnvironment        = "AGENTSERVER_V2_EXTERNAL_OIDC_ALLOW_INSECURE_HTTP"
+	coreLoginTransactionKeyEnvironment         = "AGENTSERVER_V2_LOGIN_TRANSACTION_KEY"
+	coreRunCursorKeyEnvironment                = "AGENTSERVER_V2_RUN_CURSOR_KEY"
+	coreDevPromptObjectRootEnvironment         = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
+	coreRunPolicyVersionEnvironment            = "AGENTSERVER_V2_RUN_POLICY_VERSION"
+	coreRunAllowedToolsEnvironment             = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
+	coreLLMProxyIdentityEnvironment            = "AGENTSERVER_V2_LLMPROXY_SPIFFE_ID"
+	coreCapabilityIssuerEnvironment            = "AGENTSERVER_V2_RUN_CAPABILITY_ISSUER"
+	coreCapabilityKeyIDEnvironment             = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_ID"
+	coreCapabilityPrivateKeyEnvironment        = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_FILE"
+	coreCapabilityKeyringEnvironment           = "AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE"
+	coreProductionExecutorEnvironment          = "AGENTSERVER_V2_EXECUTOR_ID"
+	coreLLMGatewaySealingKeyringEnvironment    = "AGENTSERVER_V2_LLM_GATEWAY_SEALING_KEYRING_FILE"
+	coreLLMGatewayRedirectURLEnvironment       = "AGENTSERVER_V2_LLM_GATEWAY_REDIRECT_URL"
+	coreMaxRunDurationEnvironment              = "AGENTSERVER_V2_MAX_RUN_DURATION"
+	coreMaxApprovalTTLEnvironment              = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
+	coreCapabilityExpiryGraceEnvironment       = "AGENTSERVER_V2_RUN_CAPABILITY_EXPIRY_GRACE"
+	coreEnrollmentKeyEnvironment               = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_KEY_FILE"
+	coreEnrollmentTTLEnvironment               = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_TTL"
+	coreManagedExecutorEnabledEnvironment      = "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED"
+	coreTAEWebhookRequiredEnvironment          = "AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED"
+	coreEgressPlaceholderKeyringEnvironment    = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE"
+	coreCredentialSealingKeyringEnvironment    = "AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE"
+	coreManagedTAEPSMEnvironment               = "AGENTSERVER_V2_MANAGED_TAE_PSM"
+	coreManagedSandboxProfilesEnvironment      = "AGENTSERVER_V2_MANAGED_SANDBOX_PROFILE_CATALOG"
+	coreLarkDeviceAppIDEnvironment             = "AGENTSERVER_V2_LARK_DEVICE_APP_ID"
+	coreLarkDeviceAppSecretEnvironment         = "AGENTSERVER_V2_LARK_DEVICE_APP_SECRET"
+	coreLarkDeviceScopesEnvironment            = "AGENTSERVER_V2_LARK_DEVICE_SCOPES"
+	coreByteCloudDeviceAPIEnvironment          = "AGENTSERVER_V2_BYTECLOUD_DEVICE_API_BASE_URL"
+	coreExternalManagedSandboxTokenEnvironment = "AGENTSERVER_V2_EXTERNAL_MANAGED_SANDBOX_TOKEN"
+	coreExternalTLSEnvironment                 = "AGENTSERVER_V2_CORE_EXTERNAL_TLS"
 )
 
 type coreProductionRunCapabilityConfig struct {
@@ -427,7 +429,12 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	}
 	var sandboxGatewayAuthorizer coreserver.WorkloadAuthorizer
 	if managedExecutorEnabled {
-		sandboxGatewayAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(sandboxGatewayIdentities...)
+		externalToken := strings.TrimSpace(getenv(coreExternalManagedSandboxTokenEnvironment))
+		if externalToken != "" {
+			sandboxGatewayAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizerWithExternalToken(externalToken, sandboxGatewayIdentities...)
+		} else {
+			sandboxGatewayAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(sandboxGatewayIdentities...)
+		}
 		if err != nil {
 			return err
 		}
@@ -875,7 +882,8 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	handler.Handle(corecontract.ApprovalPathPrefix, approvalHandler)
 	mountCoreRunCapabilityRoutes(handler, runCapabilityHandler)
 	handler.Handle("/", connectionHandler)
-	tlsConfig, err := coreTLSConfig(certificateFile, keyFile, clientCAFile)
+	externalTLS := strings.EqualFold(strings.TrimSpace(getenv(coreExternalTLSEnvironment)), "true")
+	tlsConfig, err := coreTLSConfigWithExternal(certificateFile, keyFile, clientCAFile, externalTLS)
 	if err != nil {
 		return err
 	}
@@ -1154,6 +1162,10 @@ func commaSeparatedTools(value string) []string {
 }
 
 func coreTLSConfig(certificateFile, keyFile, clientCAFile string) (*tls.Config, error) {
+	return coreTLSConfigWithExternal(certificateFile, keyFile, clientCAFile, false)
+}
+
+func coreTLSConfigWithExternal(certificateFile, keyFile, clientCAFile string, externalTLS bool) (*tls.Config, error) {
 	certificate, err := tls.LoadX509KeyPair(certificateFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load core TLS identity: %w", err)
@@ -1166,10 +1178,19 @@ func coreTLSConfig(certificateFile, keyFile, clientCAFile string) (*tls.Config, 
 	if !clientCAs.AppendCertsFromPEM(clientCAPEM) {
 		return nil, errors.New("core client CA file contains no certificates")
 	}
+	clientAuth := tls.RequireAndVerifyClientCert
+	if externalTLS {
+		// Cross-cluster HTTPRoute traffic is server-authenticated HTTPS only;
+		// application capability tokens provide the workload authorization. Keep
+		// accepting verified client certificates for in-cluster callers on the
+		// same listener; route-level authorization still requires SPIFFE except
+		// on the token-gated managed-sandbox paths.
+		clientAuth = tls.VerifyClientCertIfGiven
+	}
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{certificate},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientAuth:   clientAuth,
 		ClientCAs:    clientCAs,
 		NextProtos:   []string{"h2", "http/1.1"},
 	}, nil

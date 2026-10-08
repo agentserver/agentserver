@@ -24,4 +24,12 @@ describe("Gateway OAuth boundary", () => {
     expect(validateGatewayCallback({ type: "agentserver-v2.llm-gateway-oidc-callback", version: 1, state, code: "", providerError: "invalid_scope", providerErrorDescription: "openid is not allowed" })).toMatchObject({ providerError: "invalid_scope" })
     expect(() => validateGatewayCallback({ type: "agentserver-v2.llm-gateway-oidc-callback", version: 1, state, code: "", providerError: "x".repeat(129), providerErrorDescription: "" })).toThrow(/invalid/u)
   })
+
+  it("builds a workspace API-key gateway without exposing OAuth fields", () => {
+    const form = new FormData()
+    for (const [name, value] of Object.entries({ authType: "api_key", name: "Private", model: "gpt-5.6-sol", baseUrl: "https://api.example.com/v1", apiKey: "sk-test-key" })) form.set(name, value)
+    form.set("makeDefault", "on")
+    expect(buildGatewayRequest(form, "9271bfe5-68a4-484b-a2d3-e9f450a42d0c")).toMatchObject({ authType: "api_key", baseUrl: "https://api.example.com/v1", apiKey: "sk-test-key", defaultModel: "gpt-5.6-sol" })
+    expect(buildGatewayRequest(form, "9271bfe5-68a4-484b-a2d3-e9f450a42d0c")).not.toHaveProperty("oidcIssuer")
+  })
 })

@@ -113,6 +113,18 @@ func TestCreateIsIdentityBoundAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestProviderAcceptsCNProfileAndRejectsUnknownRegion(t *testing.T) {
+	kube := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	for _, region := range []string{"cn", "sg"} {
+		if _, err := New(kube, &runtimeRecorder{}, Config{Namespace: "agentserver-sandboxes", Pool: "managed-cli-v1", Region: region, Scope: region + "-managed-cli", RuntimePort: 8443}); err != nil {
+			t.Fatalf("%s profile rejected: %v", region, err)
+		}
+	}
+	if _, err := New(kube, &runtimeRecorder{}, Config{Namespace: "agentserver-sandboxes", Pool: "managed-cli-v1", Region: "i18n-tt", Scope: "bad", RuntimePort: 8443}); err == nil {
+		t.Fatal("accepted unsupported Kubernetes region")
+	}
+}
+
 func controllerObjects(t *testing.T, p *Provider, r sandboxgateway.CreateSandboxRequest) (*unstructured.Unstructured, *unstructured.Unstructured) {
 	t.Helper()
 	claim, _ := p.resource(Claims).Get(t.Context(), "as-"+r.SandboxID, metav1.GetOptions{})

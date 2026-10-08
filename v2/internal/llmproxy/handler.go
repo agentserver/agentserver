@@ -123,7 +123,7 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	}
 	operationContext, cancelOperation := context.WithDeadline(request.Context(), principal.RunDeadline)
 	defer cancelOperation()
-	upstream, err := publichttps.ValidateURL(principal.ResponsesURL, ResponsesPath)
+	upstream, err := publichttps.ValidateResponsesURL(principal.ResponsesURL)
 	if err != nil || !validUpstreamAuthorization(principal.UpstreamAuthorization) ||
 		principal.BearerExpiresAt.IsZero() || !handler.now().UTC().Before(principal.BearerExpiresAt) {
 		handler.logDisposition("resolved_credential_validation", http.StatusServiceUnavailable)

@@ -190,3 +190,41 @@ func TestKubernetesProductionSchema(t *testing.T) {
 	}
 	assertProductionSchemaAccepts(t, resolved, raw)
 }
+
+func TestKubernetesCNExternalProfileSchema(t *testing.T) {
+	base, err := ValidateConfig(validConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := base.Document
+	cn := KubernetesRelease{
+		ServiceImage: d.Images.Service, HarnessImage: d.Images.Harness, RuntimeImage: d.Images.ManagedSandbox,
+		GatewayImage:  "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-k8s-gateway@sha256:" + strings.Repeat("a", 64),
+		EnvironmentID: "aaaaaaaa-1111-4444-8888-111111111111", APICIDR: "10.251.224.59/32",
+		CNGatewayURL: "https://sandbox-gateway-cn.byted.bps.dev", CNGatewayServerName: "sandbox-gateway-cn-k8s.agentserver.internal", CNEnvironmentID: "bbbbbbbb-1111-4444-8888-111111111111",
+	}
+	got, err := PrepareKubernetesRelease(base, cn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Document.SandboxProfiles) != 2 || got.Document.SandboxProfiles[1].Gateway.ExternalURL == "" {
+		t.Fatalf("CN external profile was not emitted: %+v", got.Document.SandboxProfiles)
+	}
+	raw, err := json.Marshal(got.Document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemaRaw, err := os.ReadFile(filepath.Join(productionRepositoryRoot(t), "api/schema/production-deployment.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(schemaRaw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProductionSchemaAccepts(t, resolved, raw)
+}

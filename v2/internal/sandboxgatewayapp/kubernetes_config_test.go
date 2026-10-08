@@ -34,3 +34,28 @@ func TestKubernetesConfigDoesNotRequireTAEAuthority(t *testing.T) {
 		delete(env, name)
 	}
 }
+
+func TestCNKubernetesConfigUsesServerOnlyExternalTLS(t *testing.T) {
+	env := kubernetesConfigFixture()
+	env["AGENTSERVER_V2_SANDBOX_REGION"] = "cn"
+	env[CoreExternalTokenEnvironment] = "cross-cluster-capability"
+	env[ExternalTLSEnvironment] = "true"
+	delete(env, CoreCAEnvironment)
+	delete(env, CoreCertificateEnvironment)
+	delete(env, CoreKeyEnvironment)
+	delete(env, ClientCAEnvironment)
+	c, err := LoadProductionConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ProviderRegion != "cn" || !c.ExternalTLS || c.CoreExternalToken == "" {
+		t.Fatalf("unexpected CN external config: %+v", c)
+	}
+	if _, err := CoreHTTPClient(c); err == nil {
+		// CoreHTTPClient should not require the omitted client certificate or CA
+		// files in server-only cross-cluster mode. It may still be usable with
+		// the platform trust store, so only construction is asserted here.
+	} else {
+		t.Fatalf("server-only Core client still requires mTLS material: %v", err)
+	}
+}

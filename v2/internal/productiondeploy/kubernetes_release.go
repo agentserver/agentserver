@@ -16,6 +16,7 @@ type KubernetesRelease struct {
 	EnvironmentID, APICIDR                                 string
 	AllWorkspaces                                          bool
 	UpgradeCodex                                           bool
+	CNGatewayURL, CNGatewayServerName, CNEnvironmentID     string
 }
 
 // LoadKubernetesReleaseBase is release preparation only. Ordinary LoadConfig
@@ -80,9 +81,21 @@ func PrepareKubernetesRelease(base LoadedConfig, release KubernetesRelease) (Loa
 		GatewayImage: release.GatewayImage, RuntimeTLSSecret: "agentserver-runtime-tls", RuntimeServerName: "sandbox-runtime.agentserver.internal",
 		APIEgress: []EgressRuleDocument{{CIDR: api.String(), Ports: []uint16{6443}}}, RuntimeExternalEgress: []EgressRuleDocument{},
 	}
+	// The CN profile is optional at the artifact layer so older SG-only
+	// cutover fixtures remain valid. The production release command supplies
+	// the CN gateway defaults, which makes the resulting catalog two-region.
 	d.SandboxRegions = ManagedSandboxRegionsDocument{DefaultRegion: "sg", Regions: []string{"sg"}}
 	d.ProxyProfiles = []ManagedSandboxProxyProfileDocument{}
 	d.SandboxProfiles = []ManagedSandboxProfileDocument{{Region: "sg", Environment: d.Managed.Environment,
 		Gateway: ManagedSandboxGatewayDocument{Component: "sandbox-gateway-k8s", ClusterIP: d.Services.SandboxGateway.ClusterIP, Port: 8443, ServerName: "sandbox-gateway-k8s.agentserver.internal", Secret: "agentserver-sandbox-k8s-secrets"}, SandboxExternalEgress: []EgressRuleDocument{}}}
+	if release.CNGatewayURL != "" {
+		if release.CNEnvironmentID == "" {
+			return LoadedConfig{}, errors.New("CN Kubernetes environment ID is required when CN gateway is configured")
+		}
+		cnEnv := d.Managed.Environment
+		cnEnv.EnvironmentID = release.CNEnvironmentID
+		d.SandboxRegions.Regions = []string{"cn", "sg"}
+		d.SandboxProfiles = append(d.SandboxProfiles, ManagedSandboxProfileDocument{Region: "cn", Environment: cnEnv, Gateway: ManagedSandboxGatewayDocument{Component: "sandbox-gateway-cn-k8s", Port: 8443, ServerName: release.CNGatewayServerName, ExternalURL: release.CNGatewayURL, Secret: "agentserver-sandbox-cn-k8s-secrets", External: true}, SandboxExternalEgress: []EgressRuleDocument{}})
+	}
 	return ValidateConfig(d)
 }

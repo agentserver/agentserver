@@ -1,6 +1,10 @@
 package productiondeploy
 
-import "github.com/agentserver/agentserver/v2/internal/publichttps"
+import (
+	"slices"
+
+	"github.com/agentserver/agentserver/v2/internal/publichttps"
+)
 
 const (
 	productionPostgresClusterName = "agentserver-postgres"
@@ -22,6 +26,12 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		}
 	}
 	coreIngress := ingressFromComponents(coreIngressComponents, document.Services.Core.Port)
+	if managedExecutionActive(document.Managed) && document.Managed.Provider == "k8s" && slices.ContainsFunc(config.ManagedSandboxProfiles, func(p LoadedManagedSandboxProfile) bool { return p.Document.Gateway.External }) {
+		// The SG Istio Gateway is the only cross-cluster HTTPS entry point. The
+		// HTTPRoute narrows this to managed-sandbox paths; this NetworkPolicy
+		// admits the gateway workload to the Core TLS Service port.
+		coreIngress = append(coreIngress, ingressFromGateway(document.Ingress, document.Services.Core.Port)...)
+	}
 	platformIngress := ingressFromGateway(document.Ingress, document.Services.PlatformGateway.Port)
 	browserIngress := ingressFromGateway(document.Ingress, document.Services.BrowserGateway.Port)
 	executorIngress := append(
@@ -100,6 +110,9 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	if managedExecutionActive(document.Managed) {
 		items = append(items, networkPolicy(config, "agentserver-managed-environment-bootstrap-egress", matchComponent(managedEnvironmentBootstrapComponent), nil, databaseEgress))
 		for _, profile := range config.ManagedSandboxProfiles {
+			if profile.Document.Gateway.External {
+				continue
+			}
 			gateway := profile.Document.Gateway
 			sandboxIngress := ingressFromComponents([]string{executorComponent}, gateway.Port)
 			sandboxEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}

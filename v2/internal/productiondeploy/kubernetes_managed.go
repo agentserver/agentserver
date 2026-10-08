@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -104,39 +105,116 @@ func validateKubernetesManagedExecutor(m ManagedExecutorDocument, d ConfigDocume
 }
 
 func validateKubernetesProfiles(d *ConfigDocument) ([]LoadedManagedSandboxProfile, error) {
-	if d.SandboxRegions.DefaultRegion != managedsandboxprofile.RegionSG || !slices.Equal(d.SandboxRegions.Regions, []string{managedsandboxprofile.RegionSG}) || len(d.SandboxProfiles) != 1 || len(d.ProxyProfiles) != 0 {
-		return nil, errors.New("Kubernetes deployment requires exactly one SG profile and no TAE proxies")
-	}
-	p := d.SandboxProfiles[0]
-	g := p.Gateway
-	if p.Region != "sg" || p.TAE != (ManagedTAEDocument{}) || len(p.SandboxExternalEgress) != 0 || !reflect.DeepEqual(p.Environment, d.Managed.Environment) {
-		return nil, errors.New("Kubernetes SG profile differs from managed executor")
-	}
-	if g.Component != "sandbox-gateway-k8s" || g.Port != 8443 || g.Secret != "agentserver-sandbox-k8s-secrets" || g.ServerName != "sandbox-gateway-k8s.agentserver.internal" {
-		return nil, errors.New("Kubernetes gateway authority differs from production names")
-	}
-	ip, err := netip.ParseAddr(g.ClusterIP)
-	if err != nil || !ip.Is4() || !ip.IsPrivate() {
-		return nil, errors.New("Kubernetes gateway requires a private IPv4 Service IP")
-	}
-	for address, owner := range configuredServiceIPs(d.Services) {
-		if address == ip && owner != "sandboxGateway" {
-			return nil, fmt.Errorf("Kubernetes gateway IP conflicts with %s", owner)
-		}
+	if len(d.SandboxProfiles) < 1 || len(d.SandboxProfiles) > 2 || len(d.ProxyProfiles) != 0 ||
+		d.SandboxRegions.DefaultRegion != managedsandboxprofile.RegionSG ||
+		len(d.SandboxRegions.Regions) != len(d.SandboxProfiles) {
+		return nil, errors.New("Kubernetes deployment requires an SG profile and an optional CN profile; TAE proxies are forbidden")
 	}
 	loaded, err := validateKubernetesManagedExecutor(d.Managed, *d)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := kubernetesresources.Resources(kubernetesTemplateConfig(*d, p)); err != nil {
+	configuredRegions := make(map[string]struct{}, len(d.SandboxProfiles))
+	configuredCatalogRegions := make(map[string]struct{}, len(d.SandboxRegions.Regions))
+	for _, region := range d.SandboxRegions.Regions {
+		if region != managedsandboxprofile.RegionSG && region != managedsandboxprofile.RegionCN {
+			return nil, fmt.Errorf("Kubernetes sandbox region %q is unsupported", region)
+		}
+		if _, duplicate := configuredCatalogRegions[region]; duplicate {
+			return nil, fmt.Errorf("Kubernetes sandbox region %q is repeated", region)
+		}
+		configuredCatalogRegions[region] = struct{}{}
+	}
+	var local ManagedSandboxProfileDocument
+	for index, candidate := range d.SandboxProfiles {
+		if candidate.Region != managedsandboxprofile.RegionSG && candidate.Region != managedsandboxprofile.RegionCN {
+			return nil, fmt.Errorf("sandboxProfiles[%d] has unsupported Kubernetes region %q", index, candidate.Region)
+		}
+		if _, duplicate := configuredRegions[candidate.Region]; duplicate {
+			return nil, fmt.Errorf("Kubernetes sandbox region %q is repeated", candidate.Region)
+		}
+		configuredRegions[candidate.Region] = struct{}{}
+		if _, present := configuredCatalogRegions[candidate.Region]; !present {
+			return nil, fmt.Errorf("sandboxRegions.Regions is missing Kubernetes region %q", candidate.Region)
+		}
+		if candidate.TAE != (ManagedTAEDocument{}) || len(candidate.SandboxExternalEgress) != 0 {
+			return nil, fmt.Errorf("sandboxProfiles[%d] contains TAE or external-egress authority", index)
+		}
+		if !sameKubernetesEnvironment(candidate.Environment, d.Managed.Environment) {
+			return nil, fmt.Errorf("sandboxProfiles[%d].environment differs from managed executor", index)
+		}
+		if candidate.Region == managedsandboxprofile.RegionSG && candidate.Environment.EnvironmentID != d.Managed.Environment.EnvironmentID {
+			return nil, errors.New("SG Kubernetes environment identity must equal the managed executor environment")
+		}
+		gateway := candidate.Gateway
+		wantComponent, wantSecret, wantServer := "sandbox-gateway-k8s", "agentserver-sandbox-k8s-secrets", "sandbox-gateway-k8s.agentserver.internal"
+		if candidate.Region == managedsandboxprofile.RegionCN {
+			wantComponent, wantSecret, wantServer = "sandbox-gateway-cn-k8s", "agentserver-sandbox-cn-k8s-secrets", "sandbox-gateway-cn-k8s.agentserver.internal"
+		}
+		if gateway.Component != wantComponent || gateway.Port != HarnessControlPort || gateway.Secret != wantSecret || gateway.ServerName != wantServer {
+			return nil, fmt.Errorf("sandboxProfiles[%d] gateway authority differs from deployment-owned %s gateway", index, candidate.Region)
+		}
+		if candidate.Region == managedsandboxprofile.RegionSG {
+			if gateway.External || gateway.ExternalURL != "" {
+				return nil, errors.New("SG Kubernetes gateway must be an in-cluster mTLS profile")
+			}
+			ip, parseErr := netip.ParseAddr(gateway.ClusterIP)
+			if parseErr != nil || !ip.Is4() || !ip.IsPrivate() {
+				return nil, errors.New("SG Kubernetes gateway requires a private IPv4 Service IP")
+			}
+			for address, owner := range configuredServiceIPs(d.Services) {
+				if address == ip && owner != "sandboxGateway" {
+					return nil, fmt.Errorf("Kubernetes gateway IP conflicts with %s", owner)
+				}
+			}
+			local = candidate
+		} else {
+			if !gateway.External || gateway.ClusterIP != "" || !validExternalSandboxGatewayURL(gateway.ExternalURL) {
+				return nil, errors.New("CN Kubernetes gateway must use an external HTTPS URL without a Service IP")
+			}
+		}
+	}
+	if len(configuredRegions) != len(configuredCatalogRegions) || len(configuredRegions) < 1 {
+		return nil, errors.New("Kubernetes sandbox region catalog does not match profiles")
+	}
+	if _, present := configuredRegions[managedsandboxprofile.RegionSG]; !present {
+		return nil, errors.New("Kubernetes deployment requires an SG sandbox profile")
+	}
+	if len(d.SandboxProfiles) == 2 {
+		if _, present := configuredRegions[managedsandboxprofile.RegionCN]; !present {
+			return nil, errors.New("two-profile Kubernetes deployment requires CN profile")
+		}
+	}
+	for _, candidate := range d.SandboxProfiles {
+		if candidate.Region == managedsandboxprofile.RegionCN && candidate.Environment.EnvironmentID == d.Managed.Environment.EnvironmentID {
+			return nil, errors.New("CN Kubernetes environment identity must differ from the SG managed environment")
+		}
+	}
+	if _, err := kubernetesresources.Resources(kubernetesTemplateConfig(*d, local)); err != nil {
 		return nil, err
 	}
-	return []LoadedManagedSandboxProfile{{Document: p, SandboxTTL: loaded.ManagedSandboxTTL, ActivityTTL: loaded.ManagedActivityTTL, IdleTTL: loaded.ManagedIdleTTL}}, nil
+	result := make([]LoadedManagedSandboxProfile, 0, len(d.SandboxProfiles))
+	for _, candidate := range d.SandboxProfiles {
+		result = append(result, LoadedManagedSandboxProfile{Document: candidate, SandboxTTL: loaded.ManagedSandboxTTL, ActivityTTL: loaded.ManagedActivityTTL, IdleTTL: loaded.ManagedIdleTTL})
+	}
+	return result, nil
+}
+
+func sameKubernetesEnvironment(candidate, managed ManagedEnvironmentDocument) bool {
+	candidate.EnvironmentID = managed.EnvironmentID
+	return reflect.DeepEqual(candidate, managed)
+}
+
+func validExternalSandboxGatewayURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.Scheme == "https" && parsed.Host == ProductionCNSandboxGatewayHostname &&
+		parsed.User == nil && parsed.Path == "" && parsed.RawPath == "" && parsed.RawQuery == "" &&
+		parsed.Fragment == "" && parsed.Opaque == "" && !parsed.ForceQuery && parsed.String() == raw
 }
 
 func kubernetesTemplateConfig(d ConfigDocument, p ManagedSandboxProfileDocument) kubernetesresources.Config {
 	k := d.Managed.Kubernetes
-	return kubernetesresources.Config{Namespace: k.Namespace, TemplateName: k.Pool, RuntimeImage: d.Images.ManagedSandbox, RuntimeTLSSecret: k.RuntimeTLSSecret, GatewayNamespace: d.Namespace, GatewayServiceAccount: p.Gateway.Component, GatewayIdentity: "spiffe://" + d.TrustDomain + "/ns/" + d.Namespace + "/sa/" + p.Gateway.Component, RuntimeClassName: k.RuntimeClassName, BubblewrapProfile: k.BubblewrapProfile, RuntimeProxyURL: k.RuntimeProxyURL}
+	return kubernetesresources.Config{Namespace: k.Namespace, TemplateName: k.Pool, RuntimeImage: d.Images.ManagedSandbox, RuntimeTLSSecret: k.RuntimeTLSSecret, GatewayNamespace: d.Namespace, GatewayServiceAccount: p.Gateway.Component, GatewayComponent: p.Gateway.Component, GatewayIdentity: "spiffe://" + d.TrustDomain + "/ns/" + d.Namespace + "/sa/" + p.Gateway.Component, RuntimeClassName: k.RuntimeClassName, BubblewrapProfile: k.BubblewrapProfile, RuntimeProxyURL: k.RuntimeProxyURL}
 }
 
 func kubernetesRuntimeProxyURL(clusterDomain string) string {
@@ -173,7 +251,8 @@ func renderKubernetesGateway(c renderContext, p LoadedManagedSandboxProfile) (ku
 		valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, d.Services.Core.Port)), valueEnvironment("AGENTSERVER_V2_CORE_CA_FILE", serviceMaterialPath("ca.crt")), valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_CERT_FILE", serviceMaterialPath("tls.crt")), valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_KEY_FILE", serviceMaterialPath("tls.key")), valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_CAPABILITY_KEYRING_FILE", serviceMaterialPath("sandbox-capability-keyring.json")),
 		valueEnvironment("AGENTSERVER_V2_RUNTIME_CA_FILE", serviceMaterialPath("runtime-ca.crt")), valueEnvironment("AGENTSERVER_V2_RUNTIME_CLIENT_CERT_FILE", serviceMaterialPath("runtime-client.crt")), valueEnvironment("AGENTSERVER_V2_RUNTIME_CLIENT_KEY_FILE", serviceMaterialPath("runtime-client.key")), valueEnvironment("AGENTSERVER_V2_RUNTIME_SERVER_NAME", k.RuntimeServerName),
-		valueEnvironment("AGENTSERVER_V2_SANDBOX_PROVIDER", "k8s"), valueEnvironment("AGENTSERVER_V2_SANDBOX_REGION", "sg"), valueEnvironment("AGENTSERVER_V2_SANDBOX_SCOPE", k.Scope), valueEnvironment("AGENTSERVER_V2_SANDBOX_NAMESPACE", k.Namespace), valueEnvironment("AGENTSERVER_V2_SANDBOX_POOL", k.Pool), valueEnvironment("AGENTSERVER_V2_CLUSTER_DOMAIN", d.ClusterDomain),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_PROVIDER", "k8s"), valueEnvironment("AGENTSERVER_V2_SANDBOX_REGION", p.Document.Region), valueEnvironment("AGENTSERVER_V2_SANDBOX_SCOPE", k.Scope+"-"+p.Document.Region), valueEnvironment("AGENTSERVER_V2_SANDBOX_NAMESPACE", k.Namespace), valueEnvironment("AGENTSERVER_V2_SANDBOX_POOL", k.Pool), valueEnvironment("AGENTSERVER_V2_CLUSTER_DOMAIN", d.ClusterDomain),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_EXTERNAL_TLS", strconv.FormatBool(g.External)),
 		valueEnvironment("AGENTSERVER_V2_MANAGED_IDLE_TTL", p.Document.Environment.IdleTTL), valueEnvironment("AGENTSERVER_V2_MANAGED_WORKSPACE_ALLOWLIST", workspaceAllowlist), valueEnvironment("AGENTSERVER_V2_SANDBOX_ENSURE_TIMEOUT", "3m"), valueEnvironment("AGENTSERVER_V2_SANDBOX_ENSURE_POLL_INTERVAL", "1s"),
 	}
 	resource := deployment(deploymentInput{namespace: d.Namespace, platform: d.Platform, component: g.Component, replicas: d.Replicas.SandboxGateway, image: k.GatewayImage, serviceAccount: g.Component, command: []any{"/usr/local/bin/sandbox-gateway-k8s"}, environment: env, volumes: []any{material, emptyDirVolume("scratch", "Memory", d.Resources.ScratchTmpfs)}, volumeMounts: append(mounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}), hostAliases: map[string]string{CoreInternalHost: d.Services.Core.ClusterIP}, resources: d.Resources.SandboxGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID, strategy: "RollingUpdate", configHash: c.documentHash, termination: 45})
@@ -184,7 +263,17 @@ func renderKubernetesGateway(c renderContext, p LoadedManagedSandboxProfile) (ku
 func renderKubernetesWorkloadResources(c renderContext) ([]kubeObject, error) {
 	d := c.config.Document
 	k := d.Managed.Kubernetes
-	objects, err := kubernetesresources.Resources(kubernetesTemplateConfig(d, d.SandboxProfiles[0]))
+	var local ManagedSandboxProfileDocument
+	for _, profile := range d.SandboxProfiles {
+		if !profile.Gateway.External {
+			local = profile
+			break
+		}
+	}
+	if local.Region == "" {
+		return nil, errors.New("Kubernetes workload resources require a local SG profile")
+	}
+	objects, err := kubernetesresources.Resources(kubernetesTemplateConfig(d, local))
 	if err != nil {
 		return nil, err
 	}

@@ -1031,26 +1031,44 @@ export interface components {
             created: boolean;
         };
         CreateWorkspaceLLMGatewayRequest: {
+            /**
+             * @description Immutable authentication mode; omitted means per-user OAuth.
+             * @default oidc
+             * @enum {unknown}
+             */
+            authType: "oidc" | "api_key";
+            /**
+             * Format: uri
+             * @description API key mode only. Public HTTPS API prefix (e.g. https://api.example.com/v1). An origin alone uses /v1; /responses is appended.
+             */
+            baseUrl?: string;
+            /** @description Required in API key mode; encrypted at rest and never returned. */
+            apiKey?: string;
             gatewayId: components["schemas"]["UUID"];
             name: string;
             /** Format: uri */
-            responsesUrl: string;
+            responsesUrl?: string;
             /** Format: uri */
-            oidcIssuer: string;
-            oidcClientId: string;
-            oidcScopes: string[];
+            oidcIssuer?: string;
+            oidcClientId?: string;
+            oidcScopes?: string[];
             /** @enum {unknown} */
-            bearerTokenType: "" | "id_token" | "access_token";
+            bearerTokenType?: "" | "id_token" | "access_token";
             defaultModel: string;
             makeDefault: boolean;
-        };
+        } & unknown;
         WorkspaceLLMGatewayState: {
+            /** @enum {unknown} */
+            authType: "oidc" | "api_key";
+            /** Format: uri */
+            baseUrl: string;
+            /** @description Whether a workspace API key is stored. Never contains key material. */
+            apiKeyConfigured: boolean;
             gatewayId: components["schemas"]["UUID"];
             workspaceId: components["schemas"]["UUID"];
             name: string;
             /** Format: uri */
             responsesUrl: string;
-            /** Format: uri */
             oidcIssuer: string;
             oidcClientId: string;
             oidcScopes: string[];
@@ -1075,19 +1093,32 @@ export interface components {
             created: boolean;
         };
         UpdateWorkspaceLLMGatewayRequest: {
+            /**
+             * @description Immutable authentication mode; omitted means per-user OAuth.
+             * @default oidc
+             * @enum {unknown}
+             */
+            authType: "oidc" | "api_key";
+            /**
+             * Format: uri
+             * @description API key mode only. Public HTTPS API prefix (e.g. https://api.example.com/v1). An origin alone uses /v1; /responses is appended.
+             */
+            baseUrl?: string;
+            /** @description Omit to retain the key. Supply to rotate. Empty/null invalid; required when baseUrl changes. */
+            apiKey?: string;
             name: string;
             /** Format: uri */
-            responsesUrl: string;
+            responsesUrl?: string;
             /** Format: uri */
-            oidcIssuer: string;
-            oidcClientId: string;
-            oidcScopes: string[];
+            oidcIssuer?: string;
+            oidcClientId?: string;
+            oidcScopes?: string[];
             /** @enum {unknown} */
-            bearerTokenType: "id_token" | "access_token";
+            bearerTokenType?: "id_token" | "access_token";
             defaultModel: string;
             makeDefault: boolean;
             expectedVersion: number;
-        };
+        } & unknown;
         UpdateWorkspaceLLMGatewayResponse: {
             gateway: components["schemas"]["WorkspaceLLMGatewayState"];
             changed: boolean;
@@ -1135,6 +1166,9 @@ export interface components {
             sessionId: components["schemas"]["UUID"];
             workspaceId: components["schemas"]["UUID"];
             title: string;
+            /** @enum {unknown} */
+            titleSource: "placeholder" | "manual" | "fallback" | "generated";
+            titleVersion: number;
             /** @enum {unknown} */
             status: "active" | "archived";
             activeRunId?: components["schemas"]["UUID"];
@@ -1593,7 +1627,7 @@ export interface components {
                     version: components["schemas"]["positiveSafeInteger"];
                 };
             };
-        } & (({
+        } & (unknown & ({
             runAttemptId?: null;
             runAttemptGeneration?: null;
         } | {

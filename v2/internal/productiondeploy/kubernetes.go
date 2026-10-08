@@ -81,21 +81,23 @@ func configMapResource(config LoadedConfig, name string, data map[string]string)
 }
 
 const (
-	materialProfileCore               = "core"
-	materialProfilePlatformGateway    = "platform-gateway"
-	materialProfileBrowserGateway     = "browser-gateway"
-	materialProfileExecutorGateway    = "executor-gateway"
-	materialProfileHarnessPool        = "harness-pool"
-	materialProfileHarnessWorker      = "harness-worker"
-	materialProfileLLMProxy           = "llmproxy"
-	materialProfileCoreManaged        = "core-managed"
-	materialProfileCoreManagedWebhook = "core-managed-webhook"
-	materialProfileExecutorManaged    = "executor-gateway-managed"
-	materialProfileExecutorWebhook    = "executor-gateway-managed-webhook"
-	materialProfileSandboxGateway     = "sandbox-gateway"
-	materialProfileTAENetworkProbe    = "tae-network-probe"
-	materialProfileEgressAuthorizer   = "egress-authorizer"
-	materialProfileEgressBootstrap    = "egress-authorizer-policy-bootstrap"
+	materialProfileCore                  = "core"
+	materialProfilePlatformGateway       = "platform-gateway"
+	materialProfileBrowserGateway        = "browser-gateway"
+	materialProfileExecutorGateway       = "executor-gateway"
+	materialProfileHarnessPool           = "harness-pool"
+	materialProfileHarnessWorker         = "harness-worker"
+	materialProfileLLMProxy              = "llmproxy"
+	materialProfileCoreManaged           = "core-managed"
+	materialProfileCoreManagedWebhook    = "core-managed-webhook"
+	materialProfileCoreManagedK8s        = "core-managed-k8s"
+	materialProfileCoreManagedK8sWebhook = "core-managed-k8s-webhook"
+	materialProfileExecutorManaged       = "executor-gateway-managed"
+	materialProfileExecutorWebhook       = "executor-gateway-managed-webhook"
+	materialProfileSandboxGateway        = "sandbox-gateway"
+	materialProfileTAENetworkProbe       = "tae-network-probe"
+	materialProfileEgressAuthorizer      = "egress-authorizer"
+	materialProfileEgressBootstrap       = "egress-authorizer-policy-bootstrap"
 
 	// Kubernetes owns Secret volume targets as root. Runtime Pods use fsGroup
 	// to read their private material without copying or changing ownership.
@@ -128,6 +130,16 @@ var materialProfileFiles = map[string][]string{
 		"ca.crt", "tls.crt", "tls.key", "run-capability.key",
 		"run-capability-keyring.json", "executor-enrollment.key",
 		"llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json", "egress-placeholder-keyring.json",
+	},
+	materialProfileCoreManagedK8s: {
+		"ca.crt", "tls.crt", "tls.key", "run-capability.key",
+		"run-capability-keyring.json", "executor-enrollment.key",
+		"llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json", "external-managed-sandbox-token",
+	},
+	materialProfileCoreManagedK8sWebhook: {
+		"ca.crt", "tls.crt", "tls.key", "run-capability.key",
+		"run-capability-keyring.json", "executor-enrollment.key",
+		"llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json", "egress-placeholder-keyring.json", "external-managed-sandbox-token",
 	},
 	materialProfileExecutorManaged: {
 		"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json",

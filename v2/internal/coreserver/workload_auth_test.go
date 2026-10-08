@@ -54,6 +54,31 @@ func TestSPIFFEWorkloadAuthorizerRejectsDuplicateIdentity(t *testing.T) {
 	}
 }
 
+func TestSPIFFEWorkloadAuthorizerAcceptsExternalTokenOnlyForManagedSandboxPaths(t *testing.T) {
+	authorizer, err := NewSPIFFEWorkloadAuthorizerWithExternalToken("cross-cluster-capability", "spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway-k8s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &http.Request{URL: &url.URL{Path: "/internal/v2/managed-sandboxes/ensure"}, Header: make(http.Header), TLS: &tls.ConnectionState{}}
+	request.Header.Set(externalManagedSandboxTokenHeader, "cross-cluster-capability")
+	if err := authorizer.AuthorizeWorkload(request, "managed-sandboxes.ensure"); err != nil {
+		t.Fatalf("external token was rejected: %v", err)
+	}
+	request.URL.Path = "/internal/v2/managed-sandboxes-evil"
+	if err := authorizer.AuthorizeWorkload(request, "runs.authorize"); err == nil {
+		t.Fatal("external token authorized a non-sandbox path")
+	}
+	request.URL.Path = "/internal/v2/managed-sandboxes:reserve"
+	if err := authorizer.AuthorizeWorkload(request, "managed-sandboxes.reserve"); err != nil {
+		t.Fatalf("external token was rejected for the reserve route: %v", err)
+	}
+	request.URL.Path = "/internal/v2/managed-sandboxes/ensure"
+	request.Header.Set(externalManagedSandboxTokenHeader, "wrong")
+	if err := authorizer.AuthorizeWorkload(request, "managed-sandboxes.ensure"); err == nil {
+		t.Fatal("wrong external token was authorized")
+	}
+}
+
 func requestWithVerifiedURI(t *testing.T, raw string) *http.Request {
 	t.Helper()
 	identity, err := url.Parse(raw)

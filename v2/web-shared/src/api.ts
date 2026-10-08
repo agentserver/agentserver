@@ -446,12 +446,14 @@ function validateExecutor(value: Executor, workspaceId: string): Executor {
 }
 
 function validateGateway(value: LLMGateway, workspaceId: string): LLMGateway {
-  const keys = ["gatewayId", "workspaceId", "name", "responsesUrl", "oidcIssuer", "oidcClientId", "oidcScopes", "bearerTokenType", "defaultModel", "status", "default", "version", "grantStatus", "createdAt", "updatedAt"]
+  const keys = ["authType", "baseUrl", "apiKeyConfigured", "gatewayId", "workspaceId", "name", "responsesUrl", "oidcIssuer", "oidcClientId", "oidcScopes", "bearerTokenType", "defaultModel", "status", "default", "version", "grantStatus", "createdAt", "updatedAt"]
   if (value.grantExpiresAt !== undefined) keys.push("grantExpiresAt")
   exactKeys(value, keys, "LLM Gateway")
   canonicalID("Gateway ID", value.gatewayId)
   if (value.workspaceId !== canonicalID("workspace ID", workspaceId) || !positiveVersion(value.version) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt) || (value.grantExpiresAt !== undefined && !validTimestamp(value.grantExpiresAt))) throw new Error("The Gateway response escaped its requested scope.")
-  boundedProtocolText(value.name, 128); boundedProtocolText(value.defaultModel, 256)
+  if (value.authType !== "oidc" && value.authType !== "api_key") throw new Error("The Gateway authentication type is invalid.")
+  if (typeof value.apiKeyConfigured !== "boolean") throw new Error("The Gateway API key metadata is invalid.")
+  boundedProtocolText(value.name, 128); boundedProtocolText(value.defaultModel, 256); boundedProtocolText(value.baseUrl, 4096)
   return value
 }
 

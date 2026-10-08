@@ -43,11 +43,13 @@ type ManagedSandboxProxyProfileDocument struct {
 }
 
 type ManagedSandboxGatewayDocument struct {
-	Component  string `json:"component"`
-	ClusterIP  string `json:"clusterIp"`
-	Port       uint16 `json:"port"`
-	ServerName string `json:"serverName"`
-	Secret     string `json:"secret"`
+	Component   string `json:"component"`
+	ClusterIP   string `json:"clusterIp"`
+	Port        uint16 `json:"port"`
+	ServerName  string `json:"serverName"`
+	Secret      string `json:"secret"`
+	External    bool   `json:"external,omitempty"`
+	ExternalURL string `json:"externalUrl,omitempty"`
 }
 
 // ManagedSandboxProfileDocument is one regional provider/network/runtime
@@ -526,6 +528,9 @@ func cloneStringMap(source map[string]string) map[string]string {
 }
 
 func managedSandboxGatewayOrigin(gateway ManagedSandboxGatewayDocument) string {
+	if gateway.ExternalURL != "" {
+		return strings.TrimSuffix(gateway.ExternalURL, "/")
+	}
 	return "https://" + net.JoinHostPort(gateway.ServerName, strconv.Itoa(int(gateway.Port)))
 }
 

@@ -3,6 +3,7 @@ package productiondeploy
 import (
 	"github.com/agentserver/agentserver/v2/internal/egressgateway"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
+	"slices"
 )
 
 const (
@@ -66,6 +67,9 @@ func renderFoundation(context renderContext) []kubeObject {
 			configMapResource(config, context.managedEnvironmentConfigName, managedEnvironmentConfigData(context)),
 		}
 		for _, profile := range config.ManagedSandboxProfiles {
+			if profile.Document.Gateway.External {
+				continue
+			}
 			managedItems = append(managedItems,
 				serviceAccountResource(config, profile.Document.Gateway.Component),
 				internalService(config, profile.Document.Gateway.Component, InternalServiceDocument{
@@ -80,6 +84,9 @@ func renderFoundation(context renderContext) []kubeObject {
 				egressAuthorizerHTTPRoute(config),
 				egressAuthorizerBackendTLSPolicy(config),
 			)
+		}
+		if config.Document.Managed.Provider == "k8s" && slices.ContainsFunc(config.ManagedSandboxProfiles, func(p LoadedManagedSandboxProfile) bool { return p.Document.Gateway.External }) {
+			items = append(items, coreExternalHTTPRoute(config), coreExternalBackendTLSPolicy(config))
 		}
 		items = append(items, managedItems...)
 	} else if managedEgressAuthorizerEnabled(config.Document.Managed) {
@@ -249,6 +256,14 @@ func egressAuthorizerBackendTLSPolicy(config LoadedConfig) kubeObject {
 			},
 		},
 	}
+}
+
+func coreExternalHTTPRoute(config LoadedConfig) kubeObject {
+	return httpRoute(config, "agentserver-core-external", ProductionCoreExternalHostname, coreComponent, config.Document.Services.Core.Port, []kubeObject{pathMatch("PathPrefix", "/internal/v2/managed-sandboxes")})
+}
+
+func coreExternalBackendTLSPolicy(config LoadedConfig) kubeObject {
+	return kubeObject{"apiVersion": "gateway.networking.k8s.io/v1", "kind": "BackendTLSPolicy", "metadata": metadata("agentserver-core-external-backend-tls", config.Document.Namespace, map[string]string{"app.kubernetes.io/part-of": "agentserver-v2", "app.kubernetes.io/managed-by": "agentserver-deploy"}, nil), "spec": kubeObject{"targetRefs": []any{kubeObject{"group": "", "kind": "Service", "name": coreComponent, "sectionName": "https"}}, "validation": kubeObject{"hostname": CoreInternalHost, "caCertificateRefs": []any{kubeObject{"group": "", "kind": "ConfigMap", "name": "agentserver-core-backend-ca"}}}}}
 }
 
 func httpRoute(config LoadedConfig, name, hostname, backend string, port uint16, matches []kubeObject) kubeObject {

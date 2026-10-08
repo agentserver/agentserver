@@ -87,8 +87,8 @@ func ParseCatalog(raw []byte) (*Catalog, error) {
 }
 
 func NewCatalog(defaultRegion string, bindings []Binding) (*Catalog, error) {
-	if defaultRegion != DefaultRegion && defaultRegion != RegionSG {
-		return nil, fmt.Errorf("managed sandbox default region must be %q", DefaultRegion)
+	if defaultRegion != DefaultRegion && defaultRegion != RegionSG && defaultRegion != RegionCN {
+		return nil, fmt.Errorf("managed sandbox default region must be %q, %q, or %q", DefaultRegion, RegionSG, RegionCN)
 	}
 	if len(bindings) < 1 || len(bindings) > len(regionSet) {
 		return nil, fmt.Errorf("managed sandbox catalog must contain between 1 and %d regions", len(regionSet))

@@ -64,7 +64,7 @@ func serveSandboxGatewayWithProvider(
 		return err
 	}
 	defer coreHTTPClient.CloseIdleConnections()
-	coreClient, err := sandboxgateway.NewCoreClient(config.coreURL, coreHTTPClient)
+	coreClient, err := sandboxgateway.NewCoreClientWithExternalToken(config.coreURL, coreHTTPClient, config.coreExternalToken)
 	if err != nil {
 		return err
 	}
@@ -236,17 +236,21 @@ func newSandboxGatewayCoreHTTPClient(config sandboxGatewayConfig) (*http.Client,
 		DisableCompression:    true,
 	}
 	if parsed.Scheme == "https" {
-		certificate, err := loadSandboxGatewayCertificate(config.coreCertificate, config.coreKey, config.spiffeIdentity)
-		if err != nil {
-			return nil, fmt.Errorf("load sandbox-gateway Core client identity: %w", err)
-		}
-		rootCAs, err := loadSandboxGatewayCertPool("Core server CA", config.coreCA)
-		if err != nil {
-			return nil, err
-		}
-		transport.TLSClientConfig = &tls.Config{
-			MinVersion: tls.VersionTLS13,
-			RootCAs:    rootCAs, Certificates: []tls.Certificate{certificate}, ServerName: config.coreServerName,
+		if config.coreExternalToken != "" {
+			// Cross-cluster HTTPRoute terminates the public/internal HTTPS edge.
+			// The application capability header supplies authorization; no client
+			// certificate is sent across the cluster boundary.
+			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS13, ServerName: config.coreServerName}
+		} else {
+			certificate, err := loadSandboxGatewayCertificate(config.coreCertificate, config.coreKey, config.spiffeIdentity)
+			if err != nil {
+				return nil, fmt.Errorf("load sandbox-gateway Core client identity: %w", err)
+			}
+			rootCAs, err := loadSandboxGatewayCertPool("Core server CA", config.coreCA)
+			if err != nil {
+				return nil, err
+			}
+			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: rootCAs, Certificates: []tls.Certificate{certificate}, ServerName: config.coreServerName}
 		}
 	}
 	return &http.Client{Transport: transport}, nil

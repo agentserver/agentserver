@@ -12,9 +12,10 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 35 {
-		t.Fatalf("migration count = %d, want 35", len(migrations))
+	if len(migrations) != 36 {
+		t.Fatalf("migration count = %d, want 36", len(migrations))
 	}
+	if migrations[35].Name != "workspace_llm_api_keys" {t.Fatal("missing workspace API key migration")}
 	if migrations[33].Name != "session_journal" {
 		t.Fatalf("unexpected session journal migration: %+v", migrations[33])
 	}

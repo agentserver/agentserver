@@ -24,6 +24,7 @@ const (
 	sandboxCoreCertificateEnvironment   = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
 	sandboxCoreKeyEnvironment           = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
 	sandboxCoreServerNameEnvironment    = "AGENTSERVER_V2_CORE_SERVER_NAME"
+	sandboxCoreExternalTokenEnvironment = "AGENTSERVER_V2_CORE_EXTERNAL_TOKEN"
 	sandboxCapabilityKeyringEnvironment = "AGENTSERVER_V2_SANDBOX_CAPABILITY_KEYRING_FILE"
 	sandboxProviderModeEnvironment      = "AGENTSERVER_V2_SANDBOX_PROVIDER"
 	sandboxProviderRegionEnvironment    = "AGENTSERVER_V2_TAE_REGION"
@@ -35,6 +36,7 @@ const (
 	sandboxReconcileLimitEnvironment    = "AGENTSERVER_V2_SANDBOX_RECONCILE_LIMIT"
 	sandboxRootEnvironment              = "AGENTSERVER_V2_MANAGED_SANDBOX_ROOT"
 	sandboxPlatformEnvironment          = "AGENTSERVER_V2_MANAGED_SANDBOX_PLATFORM"
+	sandboxExternalTLSEnvironment       = "AGENTSERVER_V2_SANDBOX_GATEWAY_EXTERNAL_TLS"
 
 	defaultSandboxIdleTTL           = 5 * time.Minute
 	defaultSandboxEnsureTimeout     = 45 * time.Second
@@ -46,6 +48,7 @@ const (
 type sandboxGatewayConfig struct {
 	listenAddress string
 	production    bool
+	externalTLS   bool
 
 	tlsCertificate   string
 	tlsKey           string
@@ -54,11 +57,12 @@ type sandboxGatewayConfig struct {
 	executorIdentity string
 	harnessIdentity  string
 
-	coreURL         string
-	coreCA          string
-	coreCertificate string
-	coreKey         string
-	coreServerName  string
+	coreURL           string
+	coreCA            string
+	coreCertificate   string
+	coreKey           string
+	coreServerName    string
+	coreExternalToken string
 
 	capabilityKeyring string
 	providerMode      string
@@ -89,6 +93,16 @@ func loadSandboxGatewayConfig(getenv func(string) string, mode sandboxGatewaySer
 		return value, nil
 	}
 	config := sandboxGatewayConfig{production: production}
+	if production {
+		value := strings.TrimSpace(getenv(sandboxExternalTLSEnvironment))
+		if value != "" {
+			parsed, parseErr := strconv.ParseBool(value)
+			if parseErr != nil {
+				return sandboxGatewayConfig{}, fmt.Errorf("%s must be boolean", sandboxExternalTLSEnvironment)
+			}
+			config.externalTLS = parsed
+		}
+	}
 	var err error
 	if config.listenAddress, err = required(sandboxListenAddressEnvironment); err != nil {
 		return sandboxGatewayConfig{}, err
@@ -120,6 +134,7 @@ func loadSandboxGatewayConfig(getenv func(string) string, mode sandboxGatewaySer
 	if config.coreURL, err = required(sandboxCoreURLEnvironment); err != nil {
 		return sandboxGatewayConfig{}, err
 	}
+	config.coreExternalToken = strings.TrimSpace(getenv(sandboxCoreExternalTokenEnvironment))
 	coreOrigin, err := url.Parse(config.coreURL)
 	if err != nil || coreOrigin.Host == "" || coreOrigin.Hostname() == "" || coreOrigin.User != nil || coreOrigin.RawPath != "" ||
 		coreOrigin.RawQuery != "" || coreOrigin.Fragment != "" || coreOrigin.Opaque != "" || coreOrigin.ForceQuery ||
@@ -127,15 +142,15 @@ func loadSandboxGatewayConfig(getenv func(string) string, mode sandboxGatewaySer
 		return sandboxGatewayConfig{}, fmt.Errorf("%s must be an absolute canonical HTTP(S) origin", sandboxCoreURLEnvironment)
 	}
 	if coreOrigin.Scheme == "https" {
-		for destination, name := range map[*string]string{
-			&config.coreCA:          sandboxCoreCAEnvironment,
-			&config.coreCertificate: sandboxCoreCertificateEnvironment,
-			&config.coreKey:         sandboxCoreKeyEnvironment,
-			&config.coreServerName:  sandboxCoreServerNameEnvironment,
-		} {
+		for destination, name := range map[*string]string{&config.coreServerName: sandboxCoreServerNameEnvironment} {
 			*destination, err = required(name)
 			if err != nil {
 				return sandboxGatewayConfig{}, err
+			}
+		}
+		if config.coreExternalToken == "" {
+			for destination, name := range map[*string]string{&config.coreCA: sandboxCoreCAEnvironment, &config.coreCertificate: sandboxCoreCertificateEnvironment, &config.coreKey: sandboxCoreKeyEnvironment} {
+				*destination, err = required(name); if err != nil { return sandboxGatewayConfig{}, err }
 			}
 		}
 		if config.spiffeIdentity == "" {

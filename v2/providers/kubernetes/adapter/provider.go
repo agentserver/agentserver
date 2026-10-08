@@ -102,8 +102,8 @@ func New(kube dynamic.Interface, runtime RuntimeClient, config Config) (*Provide
 	if kube == nil || runtime == nil {
 		return nil, errors.New("Kubernetes client and runtime client are required")
 	}
-	if !dnsLabel(config.Namespace) || !dnsLabel(config.Pool) || config.Region != "sg" || !dnsLabel(config.Scope) {
-		return nil, errors.New("Kubernetes provider requires a namespace, immutable pool, SG region and scope")
+	if !dnsLabel(config.Namespace) || !dnsLabel(config.Pool) || !supportedRegion(config.Region) || !dnsLabel(config.Scope) {
+		return nil, errors.New("Kubernetes provider requires a namespace, immutable pool, supported region (cn or sg) and scope")
 	}
 	if config.ClusterDomain == "" {
 		config.ClusterDomain = "cluster.local"
@@ -116,6 +116,8 @@ func New(kube dynamic.Interface, runtime RuntimeClient, config Config) (*Provide
 	}
 	return &Provider{kube: kube, runtime: runtime, config: config}, nil
 }
+
+func supportedRegion(region string) bool { return region == "cn" || region == "sg" }
 
 func dnsLabel(s string) bool { return s != "" && len(validation.IsDNS1123Label(s)) == 0 }
 

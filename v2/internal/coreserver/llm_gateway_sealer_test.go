@@ -74,6 +74,28 @@ func TestLLMGatewayGrantSealerSupportsExplicitRotationOverlap(t *testing.T) {
 	}
 }
 
+func TestLLMGatewayAPIKeySealerBindsWorkspaceGatewayAndURL(t *testing.T) {
+	sealer := testLLMGatewaySealer(t, "active", map[string]byte{"active": 0x31})
+	workspace, gateway := "92000000-0000-4000-8000-000000000001", "92000000-0000-4000-8000-000000000002"
+	url := "https://api.example.com/v1/responses"
+	sealed, err := sealer.SealWorkspaceAPIKey(workspace, gateway, url, "sk-test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := sealer.OpenWorkspaceAPIKey(workspace, gateway, url, sealed)
+	if err != nil || string(opened) != "sk-test-key" {
+		t.Fatalf("opened API key=%q err=%v", opened, err)
+	}
+	for _, changedURL := range []string{"https://other.example.com/v1/responses", "https://api.example.com/v2/responses"} {
+		if _, err := sealer.OpenWorkspaceAPIKey(workspace, gateway, changedURL, sealed); err == nil {
+			t.Fatalf("accepted API key for changed URL %s", changedURL)
+		}
+	}
+	if _, err := sealer.SealWorkspaceAPIKey(workspace, gateway, url, "contains whitespace"); err == nil {
+		t.Fatal("accepted API key with whitespace")
+	}
+}
+
 func TestLarkGrantSealerAuthenticatesScopeAndDomain(t *testing.T) {
 	sealer := testLLMGatewaySealer(t, "active", map[string]byte{"active": 0x51})
 	scope := LarkGrantSealScope{

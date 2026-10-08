@@ -68,19 +68,34 @@ export function validateGatewayCallback(value: unknown): GatewayCallback {
 export function buildGatewayRequest(form: FormData, gatewayId: string) {
   return {
     gatewayId,
-    ...buildGatewayConfiguration(form),
+    ...buildGatewayConfiguration(form, false),
   } satisfies Parameters<import("@agentserver/v2-web-shared").ResourceAPI["createGateway"]>[1]
 }
 
 export function buildGatewayUpdateRequest(form: FormData, expectedVersion: number) {
   if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new Error("Gateway version is invalid.")
   return {
-    ...buildGatewayConfiguration(form),
+    ...buildGatewayConfiguration(form, true),
     expectedVersion,
   } satisfies Parameters<import("@agentserver/v2-web-shared").ResourceAPI["updateGateway"]>[2]
 }
 
-function buildGatewayConfiguration(form: FormData) {
+function buildGatewayConfiguration(form: FormData, update: boolean) {
+	const authType = String(form.get("authType") ?? "oidc") as "oidc" | "api_key"
+	const common = {
+		authType,
+		name: textValue(form, "name", 128),
+		defaultModel: textValue(form, "model", 256),
+		makeDefault: form.get("makeDefault") === "on",
+	}
+	if (authType === "api_key") {
+		const baseUrl = textValue(form, "baseUrl", 4096)
+		const apiKey = String(form.get("apiKey") ?? "")
+		if (!update && !apiKey) throw new Error("API key is required for a new API key gateway.")
+		if (apiKey && (apiKey.length > 8192 || /[^\x21-\x7e]/u.test(apiKey))) throw new Error("API key is outside protocol bounds.")
+		try { const parsed = new URL(baseUrl); if (parsed.protocol !== "https:" || parsed.search || parsed.hash || parsed.username || parsed.password) throw new Error() } catch { throw new Error("Base URL must be a public HTTPS API prefix without credentials, query or fragment.") }
+		return { ...common, baseUrl, ...(apiKey ? { apiKey } : {}) }
+	}
   const scopes = String(form.get("scopes") ?? "").trim().split(/\s+/u)
   if (scopes.length < 1 || scopes.length > 16 || new Set(scopes).size !== scopes.length || !scopes.includes("openid") || !scopes.includes("offline_access")) {
     throw new Error("OIDC scopes must be unique and include openid and offline_access.")
@@ -101,7 +116,7 @@ function buildGatewayConfiguration(form: FormData) {
   const bearer = String(form.get("bearer") ?? "id_token")
   if (bearer !== "id_token" && bearer !== "access_token") throw new Error("Bearer token type is invalid.")
   return {
-    name: text("name", 128),
+    ...common,
     responsesUrl,
     oidcIssuer: issuer,
     oidcClientId: text("clientId", 512),
@@ -110,6 +125,12 @@ function buildGatewayConfiguration(form: FormData) {
     defaultModel: text("model", 256),
     makeDefault: form.get("makeDefault") === "on",
   }
+}
+
+function textValue(form: FormData, name: string, maximum: number): string {
+  const value = String(form.get(name) ?? "").trim()
+  if (!value || value.length > maximum || /[\0\r\n]/u.test(value)) throw new Error(`${name} is outside protocol bounds.`)
+  return value
 }
 
 export function gatewayTone(gateway: LLMGateway): "neutral" | "success" | "warning" | "danger" {

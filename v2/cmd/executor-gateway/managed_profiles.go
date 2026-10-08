@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ type managedSandboxGatewayProfileDocument struct {
 	SandboxGatewayServerName string                `json:"sandboxGatewayServerName,omitempty"`
 	SandboxTTL               string                `json:"sandboxTtl"`
 	ActivityTTL              string                `json:"activityTtl"`
+	ExternalTLS              bool                  `json:"externalTls,omitempty"`
 }
 
 type configuredManagedSandboxGatewayProfile struct {
@@ -40,6 +42,7 @@ type configuredManagedSandboxGatewayProfile struct {
 	baseURL      string
 	serverName   string
 	provisioning executorgateway.ManagedSandboxProvisioningSpec
+	externalTLS  bool
 }
 
 // configureProfiledTAEExecution constructs one closed routing graph for all
@@ -242,8 +245,11 @@ func parseManagedSandboxGatewayProfiles(raw []byte, mode gatewayServeMode) ([]co
 		if kind == "" {
 			kind = executionbackend.KindTAE
 		}
-		if !kind.Managed() || (kind == executionbackend.KindKubernetes && source.Region != managedsandboxprofile.RegionSG) || (kind == executionbackend.KindTAE && source.Region == managedsandboxprofile.RegionSG) {
+		if !kind.Managed() || (kind == executionbackend.KindKubernetes && source.Region != managedsandboxprofile.RegionSG && source.Region != managedsandboxprofile.RegionCN) || (kind == executionbackend.KindTAE && source.Region == managedsandboxprofile.RegionSG) {
 			return nil, errors.New("managed provider kind and region do not match")
+		}
+		if source.ExternalTLS && kind != executionbackend.KindKubernetes {
+			return nil, errors.New("external TLS is only supported for Kubernetes sandbox profiles")
 		}
 		if len(profiles) > 0 && profiles[0].kind != kind {
 			return nil, errors.New("mixed managed providers require separate router configuration")
@@ -282,8 +288,7 @@ func parseManagedSandboxGatewayProfiles(raw []byte, mode gatewayServeMode) ([]co
 			return nil, fmt.Errorf("managed sandbox region %q: %w", binding.Region, err)
 		}
 		profiles = append(profiles, configuredManagedSandboxGatewayProfile{
-			kind:    kind,
-			binding: binding, baseURL: baseURL, serverName: serverName, provisioning: provisioning,
+			kind: kind, binding: binding, baseURL: baseURL, serverName: serverName, provisioning: provisioning, externalTLS: source.ExternalTLS,
 		})
 		regions[binding.Region] = struct{}{}
 		environments[binding.EnvironmentID] = struct{}{}
@@ -321,13 +326,18 @@ func newManagedSandboxGatewayHTTPClient(
 	caFile, clientCertificateFile, clientKeyFile, clientSPIFFEIdentity string,
 ) (*http.Client, error) {
 	if strings.HasPrefix(profile.baseURL, "https://") {
+		if profile.externalTLS {
+			return newServerOnlyHTTPSClient(profile.baseURL)
+		}
 		client, err := newCoreHTTPClientWithIdentity(
 			caFile, clientCertificateFile, clientKeyFile, profile.serverName, clientSPIFFEIdentity,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("configure sandbox-gateway client for region %q: %w", profile.binding.Region, err)
 		}
-		if profile.kind==executionbackend.KindKubernetes{client.Transport.(*http.Transport).ResponseHeaderTimeout=4*time.Minute}
+		if profile.kind == executionbackend.KindKubernetes {
+			client.Transport.(*http.Transport).ResponseHeaderTimeout = 4 * time.Minute
+		}
 		return client, nil
 	}
 	if mode != gatewayServeInsecureDevelopment {
@@ -338,6 +348,18 @@ func newManagedSandboxGatewayHTTPClient(
 		MaxIdleConns: 32, MaxIdleConnsPerHost: 32, IdleConnTimeout: time.Minute,
 		ResponseHeaderTimeout: 30 * time.Second, DisableCompression: true,
 	}
+	return &http.Client{Transport: transport}, nil
+}
+
+func newServerOnlyHTTPSClient(baseURL string) (*http.Client, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("external sandbox gateway URL must be a canonical HTTPS origin")
+	}
+	// The HTTPRoute edge presents the certificate for the public hostname. The
+	// profile's serverName is reserved for the in-cluster BackendTLSPolicy and
+	// must not be used as the cross-cluster SNI name.
+	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext, ForceAttemptHTTP2: true, MaxIdleConns: 32, MaxIdleConnsPerHost: 32, IdleConnTimeout: time.Minute, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 4 * time.Minute, DisableCompression: true, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, ServerName: parsed.Hostname()}}
 	return &http.Client{Transport: transport}, nil
 }
 

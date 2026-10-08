@@ -41,7 +41,7 @@ func Serve(ctx context.Context, config Config, provider sandboxgateway.Provider,
 		return err
 	}
 	defer coreHTTPClient.CloseIdleConnections()
-	coreClient, err := sandboxgateway.NewCoreClient(config.CoreURL, coreHTTPClient)
+	coreClient, err := sandboxgateway.NewCoreClientWithExternalToken(config.CoreURL, coreHTTPClient, config.CoreExternalToken)
 	if err != nil {
 		return err
 	}

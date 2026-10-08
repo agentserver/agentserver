@@ -86,3 +86,30 @@ WHERE gateway_id = $1`, quotedSchema)
 		t.Fatalf("developer update error = %v", err)
 	}
 }
+
+func TestPostgreSQLWorkspaceLLMAPIKeyGatewayLifecycle(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	workspaceID, ownerID, gatewayID := stateTestUUID(221000), stateTestUUID(221001), stateTestUUID(221002)
+	quoted := quoteIdentifier(schema)
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id,status,managed_lark_credential_mode) VALUES ($1,'active','webhook_swap')", quoted), workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.users (id,status) VALUES ($1,'active')", quoted), ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspace_members (workspace_id,user_id,role) VALUES ($1,$2,'owner')", quoted), workspaceID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateWorkspaceLLMGateway(t.Context(), CreateWorkspaceLLMGatewayCommand{AuthType: LLMGatewayAuthAPIKey, SealedAPIKey: make([]byte, 64), ID: gatewayID, WorkspaceID: workspaceID, ActorID: ownerID, Name: "api-key", ResponsesURL: "https://api.example.com/v1/responses", BearerTokenType: LLMGatewayBearerAccessToken, DefaultModel: "gpt-5.6-sol", MakeDefault: true})
+	if err != nil || !created.Created || created.Gateway.AuthType != LLMGatewayAuthAPIKey || !created.Gateway.APIKeyConfigured {
+		t.Fatalf("create API key gateway=%+v err=%v", created, err)
+	}
+	listed, err := store.ListWorkspaceLLMGateways(t.Context(), workspaceID, ownerID)
+	if err != nil || len(listed) != 1 || listed[0].APIKeyConfigured == false || listed[0].GrantStatus != "" {
+		t.Fatalf("list API key gateway=%+v err=%v", listed, err)
+	}
+	updated, err := store.UpdateWorkspaceLLMGateway(t.Context(), UpdateWorkspaceLLMGatewayCommand{AuthType: LLMGatewayAuthAPIKey, SealedAPIKey: make([]byte, 64), ID: gatewayID, WorkspaceID: workspaceID, ActorID: ownerID, Name: "api-key", ResponsesURL: "https://api2.example.com/v1/responses", BearerTokenType: LLMGatewayBearerAccessToken, DefaultModel: "gpt-5.6-sol", MakeDefault: true, ExpectedVersion: 1})
+	if err != nil || !updated.Changed || updated.Gateway.Version != 2 {
+		t.Fatalf("update API key gateway=%+v err=%v", updated, err)
+	}
+}

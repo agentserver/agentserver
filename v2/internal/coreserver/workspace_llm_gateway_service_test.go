@@ -26,6 +26,25 @@ func TestWorkspaceLLMGatewayResolutionLogContainsOnlyStage(t *testing.T) {
 	}
 }
 
+func TestWorkspaceLLMGatewayAPIKeyCreateEncryptsAndNeverReturnsKey(t *testing.T) {
+	var command coredb.CreateWorkspaceLLMGatewayCommand
+	store := &fakeWorkspaceLLMGatewayStore{
+		requireOwner: func(context.Context, string, string) error { return nil },
+		createGateway: func(_ context.Context, value coredb.CreateWorkspaceLLMGatewayCommand) (coredb.CreateWorkspaceLLMGatewayResult, error) {
+			command = value
+			return coredb.CreateWorkspaceLLMGatewayResult{Created: true, Gateway: coredb.WorkspaceLLMGateway{ID: value.ID, WorkspaceID: value.WorkspaceID, Name: value.Name, AuthType: coredb.LLMGatewayAuthAPIKey, APIKeyConfigured: true, ResponsesURL: value.ResponsesURL, DefaultModel: value.DefaultModel, Status: coredb.LLMGatewayStatusActive, Default: true, Version: 1}}, nil
+		},
+	}
+	service := newTestWorkspaceLLMGatewayService(t, store, &fakeWorkspaceLLMGatewayProvider{}, time.Now().UTC(), nil)
+	result, err := service.CreateGateway(t.Context(), testLLMGatewayWorkspaceID, testLLMGatewayUserID, corecontract.CreateWorkspaceLLMGatewayRequest{GatewayID: testLLMGatewayID, AuthType: coredb.LLMGatewayAuthAPIKey, Name: "private", BaseURL: "https://api.example.com/v1", APIKey: "sk-secret", DefaultModel: "gpt-5.6-sol", MakeDefault: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.AuthType != coredb.LLMGatewayAuthAPIKey || string(command.SealedAPIKey) == "sk-secret" || len(command.SealedAPIKey) < 29 || result.Gateway.APIKeyConfigured == false {
+		t.Fatalf("API key command/result leaked or was not sealed: command=%+v result=%+v", command, result)
+	}
+}
+
 const (
 	testLLMGatewayWorkspaceID = "93000000-0000-4000-8000-000000000001"
 	testLLMGatewayID          = "93000000-0000-4000-8000-000000000002"
@@ -559,6 +578,7 @@ func (provider *fakeWorkspaceLLMGatewayProvider) Refresh(context.Context, Worksp
 }
 
 type fakeWorkspaceLLMGatewayStore struct {
+	createGateway        func(context.Context, coredb.CreateWorkspaceLLMGatewayCommand) (coredb.CreateWorkspaceLLMGatewayResult, error)
 	requireOwner         func(context.Context, string, string) error
 	updateGateway        func(context.Context, coredb.UpdateWorkspaceLLMGatewayCommand) (coredb.UpdateWorkspaceLLMGatewayResult, error)
 	readForAuthorization func(context.Context, string, string, string) (coredb.WorkspaceLLMGateway, error)
@@ -576,8 +596,8 @@ func (store *fakeWorkspaceLLMGatewayStore) RequireWorkspaceLLMGatewayOwner(ctx c
 	return store.requireOwner(ctx, workspaceID, userID)
 }
 
-func (*fakeWorkspaceLLMGatewayStore) CreateWorkspaceLLMGateway(context.Context, coredb.CreateWorkspaceLLMGatewayCommand) (coredb.CreateWorkspaceLLMGatewayResult, error) {
-	panic("unexpected CreateWorkspaceLLMGateway")
+func (store *fakeWorkspaceLLMGatewayStore) CreateWorkspaceLLMGateway(ctx context.Context, command coredb.CreateWorkspaceLLMGatewayCommand) (coredb.CreateWorkspaceLLMGatewayResult, error) {
+	return store.createGateway(ctx, command)
 }
 func (store *fakeWorkspaceLLMGatewayStore) UpdateWorkspaceLLMGateway(ctx context.Context, command coredb.UpdateWorkspaceLLMGatewayCommand) (coredb.UpdateWorkspaceLLMGatewayResult, error) {
 	return store.updateGateway(ctx, command)

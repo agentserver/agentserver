@@ -33,6 +33,8 @@ const (
 	CoreCertificateEnvironment    = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
 	CoreKeyEnvironment            = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
 	CoreServerNameEnvironment     = "AGENTSERVER_V2_CORE_SERVER_NAME"
+	CoreExternalTokenEnvironment  = "AGENTSERVER_V2_CORE_EXTERNAL_TOKEN"
+	ExternalTLSEnvironment        = "AGENTSERVER_V2_SANDBOX_GATEWAY_EXTERNAL_TLS"
 	CapabilityKeyringEnvironment  = "AGENTSERVER_V2_SANDBOX_CAPABILITY_KEYRING_FILE"
 	ProviderModeEnvironment       = "AGENTSERVER_V2_SANDBOX_PROVIDER"
 	ProviderRegionEnvironment     = "AGENTSERVER_V2_TAE_REGION"
@@ -72,11 +74,13 @@ type Config struct {
 	ExecutorIdentity string
 	HarnessIdentity  string
 
-	CoreURL         string
-	CoreCA          string
-	CoreCertificate string
-	CoreKey         string
-	CoreServerName  string
+	CoreURL           string
+	CoreCA            string
+	CoreCertificate   string
+	CoreKey           string
+	CoreServerName    string
+	CoreExternalToken string
+	ExternalTLS       bool
 
 	CapabilityKeyring  string
 	ProviderRegion     string
@@ -111,11 +115,10 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 	}
 	for destination, name := range map[*string]string{
 		&config.ListenAddress: ListenAddressEnvironment, &config.TLSCertificate: TLSCertificateEnvironment,
-		&config.TLSKey: TLSKeyEnvironment, &config.ClientCA: ClientCAEnvironment,
+		&config.TLSKey:         TLSKeyEnvironment,
 		&config.SPIFFEIdentity: SPIFFEIdentityEnvironment, &config.ExecutorIdentity: ExecutorIdentityEnvironment,
 		&config.HarnessIdentity: HarnessIdentityEnvironment, &config.CoreURL: CoreURLEnvironment,
-		&config.CoreCA: CoreCAEnvironment, &config.CoreCertificate: CoreCertificateEnvironment,
-		&config.CoreKey: CoreKeyEnvironment, &config.CoreServerName: CoreServerNameEnvironment,
+		&config.CoreServerName:    CoreServerNameEnvironment,
 		&config.CapabilityKeyring: CapabilityKeyringEnvironment,
 		&config.ProviderRegion:    regionEnvironment, &config.ProviderPSM: scopeEnvironment,
 	} {
@@ -125,13 +128,48 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 		}
 		*destination = value
 	}
+	config.CoreExternalToken = strings.TrimSpace(getenv(CoreExternalTokenEnvironment))
+	var err error
+	if len(config.CoreExternalToken) > 8192 || strings.ContainsAny(config.CoreExternalToken, "\x00\r\n") {
+		return Config{}, fmt.Errorf("%s is invalid", CoreExternalTokenEnvironment)
+	}
+	if raw := strings.TrimSpace(getenv(ExternalTLSEnvironment)); raw != "" {
+		config.ExternalTLS, err = requiredBool(raw, ExternalTLSEnvironment)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if config.CoreExternalToken != "" && !config.ExternalTLS {
+		return Config{}, errors.New("external Core token requires external TLS mode")
+	}
+	if config.CoreExternalToken == "" && config.ExternalTLS {
+		return Config{}, errors.New("external TLS mode requires an external Core token")
+	}
+	if !config.ExternalTLS {
+		config.ClientCA, err = required(ClientCAEnvironment)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if config.CoreExternalToken == "" {
+		for destination, name := range map[*string]string{
+			&config.CoreCA: CoreCAEnvironment, &config.CoreCertificate: CoreCertificateEnvironment,
+			&config.CoreKey: CoreKeyEnvironment,
+		} {
+			value, requiredErr := required(name)
+			if requiredErr != nil {
+				return Config{}, requiredErr
+			}
+			*destination = value
+		}
+	}
 	if _, _, err := net.SplitHostPort(config.ListenAddress); err != nil {
 		return Config{}, fmt.Errorf("parse production sandbox-gateway listen address: %w", err)
 	}
 	if !config.ProviderKind.Managed() {
 		return Config{}, fmt.Errorf("%s must be tae or k8s", ProviderModeEnvironment)
 	}
-	if (config.ProviderKind == executionbackend.KindTAE && !managedsandboxprofile.ValidRegion(config.ProviderRegion)) || (config.ProviderKind == executionbackend.KindKubernetes && config.ProviderRegion != "sg") {
+	if (config.ProviderKind == executionbackend.KindTAE && !managedsandboxprofile.ValidRegion(config.ProviderRegion)) || (config.ProviderKind == executionbackend.KindKubernetes && config.ProviderRegion != "sg" && config.ProviderRegion != "cn") {
 		return Config{}, fmt.Errorf("%s is unsupported", ProviderRegionEnvironment)
 	}
 	if len(config.ProviderPSM) > 256 || strings.ContainsAny(config.ProviderPSM, "\x00\r\n") {

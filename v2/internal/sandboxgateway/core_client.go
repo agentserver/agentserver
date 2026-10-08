@@ -34,8 +34,9 @@ type Core interface {
 }
 
 type CoreClient struct {
-	baseURL    *url.URL
-	httpClient *http.Client
+	baseURL       *url.URL
+	httpClient    *http.Client
+	externalToken string
 }
 
 type CoreError struct {
@@ -58,6 +59,10 @@ func (coreError *CoreError) Error() string {
 }
 
 func NewCoreClient(baseURL string, httpClient *http.Client) (*CoreClient, error) {
+	return NewCoreClientWithExternalToken(baseURL, httpClient, "")
+}
+
+func NewCoreClientWithExternalToken(baseURL string, httpClient *http.Client, externalToken string) (*CoreClient, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawPath != "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" || parsed.ForceQuery ||
@@ -73,7 +78,10 @@ func NewCoreClient(baseURL string, httpClient *http.Client) (*CoreClient, error)
 	parsed.Path = ""
 	clientCopy := *httpClient
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &CoreClient{baseURL: parsed, httpClient: &clientCopy}, nil
+	if externalToken != "" && (len(externalToken) > 8192 || strings.ContainsAny(externalToken, "\x00\r\n")) {
+		return nil, errors.New("external Core token is invalid")
+	}
+	return &CoreClient{baseURL: parsed, httpClient: &clientCopy, externalToken: externalToken}, nil
 }
 
 func coreLoopbackHost(host string) bool {
@@ -178,6 +186,9 @@ func (client *CoreClient) do(ctx context.Context, method, path string, command, 
 		httpRequest.Header.Set("Content-Type", "application/json")
 	}
 	httpRequest.Header.Set("Accept", "application/json")
+	if client.externalToken != "" {
+		httpRequest.Header.Set("X-AgentServer-Managed-Sandbox-Token", client.externalToken)
+	}
 	httpResponse, err := client.httpClient.Do(httpRequest)
 	if err != nil {
 		return fmt.Errorf("execute core managed sandbox command: %w", err)

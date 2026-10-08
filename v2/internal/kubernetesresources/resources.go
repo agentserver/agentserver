@@ -26,6 +26,7 @@ type Config struct {
 	RuntimeTLSSecret      string
 	GatewayNamespace      string
 	GatewayServiceAccount string
+	GatewayComponent      string
 	GatewayIdentity       string
 	// Empty intentionally omits runtimeClassName (the cluster default). It
 	// does NOT create a RuntimeClass called "default" or claim VM isolation.
@@ -115,8 +116,10 @@ func Resources(c Config) ([]map[string]any, error) {
 		obj("networking.k8s.io/v1", "NetworkPolicy", "sandbox-default-deny", map[string]any{"spec": map[string]any{"podSelector": map[string]any{}, "policyTypes": []any{"Ingress", "Egress"}}}),
 		obj("networking.k8s.io/v1", "NetworkPolicy", "sandbox-runtime", map[string]any{"spec": map[string]any{
 			"podSelector": selector, "policyTypes": []any{"Ingress", "Egress"},
-			"ingress": []any{map[string]any{"from": []any{map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": c.GatewayNamespace}}, "podSelector": map[string]any{"matchLabels": map[string]any{"app.kubernetes.io/name": "sandbox-gateway-k8s"}}}}, "ports": []any{map[string]any{"protocol": "TCP", "port": int64(8443)}}}},
+			"ingress": []any{map[string]any{"from": []any{map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": c.GatewayNamespace}}, "podSelector": map[string]any{"matchLabels": map[string]any{"app.kubernetes.io/name": firstNonEmpty(c.GatewayComponent, "sandbox-gateway-k8s")}}}}, "ports": []any{map[string]any{"protocol": "TCP", "port": int64(8443)}}}},
 			"egress":  []any{map[string]any{"to": []any{map[string]any{"namespaceSelector": map[string]any{"matchLabels": map[string]any{"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": map[string]any{"matchLabels": map[string]any{"k8s-app": "kube-dns"}}}}, "ports": []any{map[string]any{"protocol": "UDP", "port": int64(53)}, map[string]any{"protocol": "TCP", "port": int64(53)}}}},
 		}}),
 	}, nil
 }
+
+func firstNonEmpty(value, fallback string) string { if value != "" { return value }; return fallback }

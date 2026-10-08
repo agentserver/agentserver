@@ -18,13 +18,20 @@ func newSandboxGatewayServerTLSConfig(config sandboxGatewayConfig) (*tls.Config,
 		return nil, err
 	}
 	allowed := map[string]struct{}{config.executorIdentity: {}, config.harnessIdentity: {}}
+	clientAuth := tls.RequireAndVerifyClientCert
+	if config.externalTLS {
+		clientAuth = tls.NoClientCert
+	}
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{certificate},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientAuth:   clientAuth,
 		ClientCAs:    clientCAs,
 		NextProtos:   []string{"h2", "http/1.1"},
 		VerifyConnection: func(state tls.ConnectionState) error {
+			if config.externalTLS {
+				return nil
+			}
 			if len(state.VerifiedChains) == 0 || len(state.PeerCertificates) == 0 {
 				return errors.New("sandbox-gateway client has no verified certificate chain")
 			}

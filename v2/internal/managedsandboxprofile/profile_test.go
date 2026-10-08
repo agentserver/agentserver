@@ -40,13 +40,13 @@ func TestCatalogRejectsDuplicateEnvironment(t *testing.T) {
 	}
 }
 
-func TestCatalogRequiresWorkspaceInitialRegion(t *testing.T) {
+func TestCatalogAcceptsCNWorkspaceInitialRegion(t *testing.T) {
 	_, err := NewCatalog(RegionCN, []Binding{{
 		Region:        RegionCN,
 		EnvironmentID: "10000000-0000-4000-8000-000000000001",
 	}})
-	if err == nil || !strings.Contains(err.Error(), DefaultRegion) {
-		t.Fatalf("NewCatalog() error = %v, want fixed default region", err)
+	if err != nil {
+		t.Fatalf("NewCatalog() error = %v", err)
 	}
 }
 

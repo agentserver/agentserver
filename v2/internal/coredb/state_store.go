@@ -34,9 +34,10 @@ func (s *StateStore) WithManagedSandboxCatalog(catalog *managedsandboxprofile.Ca
 	if catalog != nil {
 		copy.managedDefaultRegion = catalog.DefaultRegion()
 		for _, binding := range catalog.Bindings() {
-			if binding.Region == managedsandboxprofile.RegionSG {
-				copy.managedProfileIDs = append(copy.managedProfileIDs, binding.EnvironmentID)
-			}
+			// Every deployment-owned profile is a valid shared Kubernetes/TAE
+			// environment. Keep the complete catalog here so a workspace that
+			// selects CN can reserve its CN environment just like SG.
+			copy.managedProfileIDs = append(copy.managedProfileIDs, binding.EnvironmentID)
 		}
 	}
 	return &copy

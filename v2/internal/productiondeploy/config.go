@@ -79,16 +79,19 @@ const (
 	ServiceUID uint32 = 65534
 	ServiceGID uint32 = 65534
 
-	CoreInternalHost     = "core.agentserver.internal"
-	ExecutorInternalHost = "executor.agentserver.internal"
-	LLMProxyInternalHost = "llmproxy.agentserver.internal"
-	HydraInternalHost    = "hydra.agentserver.internal"
-	SandboxInternalHost  = "sandbox-gateway.agentserver.internal"
-	EgressInternalHost   = "egress-authorizer.agentserver.internal"
-	HarnessControlPort   = 8443
-	PublicHTTPPort       = 8080
-	HydraPublicPort      = 4444
-	HydraAdminPort       = 4445
+	CoreInternalHost                      = "core.agentserver.internal"
+	ProductionCoreExternalHostname        = "core-sg.byted.bps.dev"
+	ProductionCNSandboxGatewayHostname    = "sandbox-gateway-cn.byted.bps.dev"
+	ProductionCNSandboxGatewayBackendHost = "sandbox-gateway-cn-k8s.agentserver.internal"
+	ExecutorInternalHost                  = "executor.agentserver.internal"
+	LLMProxyInternalHost                  = "llmproxy.agentserver.internal"
+	HydraInternalHost                     = "hydra.agentserver.internal"
+	SandboxInternalHost                   = "sandbox-gateway.agentserver.internal"
+	EgressInternalHost                    = "egress-authorizer.agentserver.internal"
+	HarnessControlPort                    = 8443
+	PublicHTTPPort                        = 8080
+	HydraPublicPort                       = 4444
+	HydraAdminPort                        = 4445
 
 	ProductionGatewayNamespace         = "istio-ingress"
 	ProductionGatewayName              = "istio-gateway"

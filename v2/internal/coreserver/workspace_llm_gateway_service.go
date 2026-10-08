@@ -121,6 +121,12 @@ func (service *WorkspaceLLMGatewayService) CreateGateway(
 	workspaceID, actorID string,
 	request corecontract.CreateWorkspaceLLMGatewayRequest,
 ) (corecontract.CreateWorkspaceLLMGatewayResponse, error) {
+	if request.AuthType == coredb.LLMGatewayAuthAPIKey {
+		return service.createAPIKeyGateway(ctx, workspaceID, actorID, request)
+	}
+	if (request.AuthType != "" && request.AuthType != coredb.LLMGatewayAuthOIDC) || request.BaseURL != "" || request.APIKey != "" {
+		return corecontract.CreateWorkspaceLLMGatewayResponse{}, llmGatewayStateError(coredb.ErrorInvalidArgument, "CreateWorkspaceLLMGateway", request.GatewayID, "invalid gateway authentication configuration")
+	}
 	if service == nil {
 		return corecontract.CreateWorkspaceLLMGatewayResponse{}, errors.New("workspace LLM gateway service is unavailable")
 	}
@@ -194,6 +200,12 @@ func (service *WorkspaceLLMGatewayService) UpdateGateway(
 	workspaceID, gatewayID, actorID string,
 	request corecontract.UpdateWorkspaceLLMGatewayRequest,
 ) (corecontract.UpdateWorkspaceLLMGatewayResponse, error) {
+	if request.AuthType == coredb.LLMGatewayAuthAPIKey {
+		return service.updateAPIKeyGateway(ctx, workspaceID, gatewayID, actorID, request)
+	}
+	if (request.AuthType != "" && request.AuthType != coredb.LLMGatewayAuthOIDC) || request.BaseURL != "" || request.APIKey != nil {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, llmGatewayStateError(coredb.ErrorInvalidArgument, "UpdateWorkspaceLLMGateway", gatewayID, "invalid gateway authentication configuration")
+	}
 	const operation = "UpdateWorkspaceLLMGateway"
 	if service == nil {
 		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, errors.New("workspace LLM gateway service is unavailable")
@@ -255,6 +267,9 @@ func (service *WorkspaceLLMGatewayService) BeginAuthorization(
 	gateway, err := service.store.ReadWorkspaceLLMGatewayForAuthorization(ctx, workspaceID, gatewayID, actorID)
 	if err != nil {
 		return corecontract.BeginWorkspaceLLMGatewayAuthorizationResponse{}, err
+	}
+	if gateway.AuthType == coredb.LLMGatewayAuthAPIKey {
+		return corecontract.BeginWorkspaceLLMGatewayAuthorizationResponse{}, llmGatewayStateError(coredb.ErrorInvalidArgument, "BeginWorkspaceLLMGatewayAuthorization", gatewayID, "API key gateways do not use per-user OAuth authorization")
 	}
 	provider, err := service.discoverGatewayProvider(ctx, gateway)
 	if err != nil {
@@ -453,11 +468,14 @@ func (service *WorkspaceLLMGatewayService) ResolveUpstream(
 	}
 	binding := coredb.RunLLMGatewayBinding{
 		GatewayID: authority.Gateway.ID, ConfigVersion: authority.Gateway.Version,
-		GrantUserID: authority.Grant.UserID, Model: authority.Model,
+		GrantUserID: authority.AuthorizedUserID(), Model: authority.Model,
 	}
 	if err := validateLLMGatewayLiveProjection(authority, binding); err != nil {
 		service.logGatewayResolutionFailure("live_projection")
 		return LLMGatewayUpstreamAuthorization{}, err
+	}
+	if authority.Gateway.AuthType == coredb.LLMGatewayAuthAPIKey {
+		return service.resolveAPIKeyUpstream(authority, binding)
 	}
 	tokens, err := service.openTokenSet(authority, binding)
 	if err != nil {
@@ -715,6 +733,16 @@ func (service *WorkspaceLLMGatewayService) randomSecret(label string) (string, e
 }
 
 func validateLLMGatewayLiveProjection(authority coredb.LLMGatewayLiveAuthority, binding coredb.RunLLMGatewayBinding) error {
+	if authority.Gateway.AuthType == coredb.LLMGatewayAuthAPIKey {
+		if authority.Gateway.ID != binding.GatewayID || !canonicalPublicUUID(authority.Gateway.WorkspaceID) ||
+			authority.Gateway.Version != binding.ConfigVersion || authority.Gateway.Status != coredb.LLMGatewayStatusActive ||
+			authority.Gateway.DefaultModel != binding.Model || authority.Model != binding.Model ||
+			authority.APIKeyUserID != binding.GrantUserID || !canonicalPublicUUID(binding.GrantUserID) ||
+			!authority.Gateway.APIKeyConfigured || len(authority.SealedAPIKey) < 29 {
+			return errors.New("Core returned an inconsistent workspace API key authority projection")
+		}
+		return nil
+	}
 	if authority.Gateway.ID != binding.GatewayID || authority.Gateway.WorkspaceID == "" ||
 		authority.Gateway.Version != binding.ConfigVersion || authority.Gateway.Status != coredb.LLMGatewayStatusActive ||
 		authority.Gateway.DefaultModel != binding.Model || authority.Model != binding.Model ||
@@ -729,12 +757,24 @@ func validateLLMGatewayLiveProjection(authority coredb.LLMGatewayLiveAuthority, 
 
 func contractWorkspaceLLMGateway(source coredb.WorkspaceLLMGateway) corecontract.WorkspaceLLMGatewayState {
 	result := corecontract.WorkspaceLLMGatewayState{
+		AuthType: source.AuthType, BaseURL: strings.TrimSuffix(source.ResponsesURL, "/responses"), APIKeyConfigured: source.APIKeyConfigured,
 		GatewayID: source.ID, WorkspaceID: source.WorkspaceID, Name: source.Name,
 		ResponsesURL: source.ResponsesURL, OIDCIssuer: source.OIDCIssuer,
 		OIDCClientID: source.OIDCClientID, OIDCScopes: strings.Fields(source.OIDCScopes),
 		BearerTokenType: source.BearerTokenType, DefaultModel: source.DefaultModel,
 		Status: source.Status, Default: source.Default, Version: source.Version,
 		GrantStatus: source.GrantStatus, CreatedAt: source.CreatedAt.UTC(), UpdatedAt: source.UpdatedAt.UTC(),
+	}
+	if result.AuthType == "" {
+		result.AuthType = coredb.LLMGatewayAuthOIDC
+	}
+	if result.OIDCScopes == nil {
+		result.OIDCScopes = []string{}
+	}
+	if result.AuthType == coredb.LLMGatewayAuthAPIKey {
+		result.GrantStatus = ""
+		result.GrantExpiresAt = nil
+		return result
 	}
 	if source.GrantExpiresAt != nil {
 		expiresAt := source.GrantExpiresAt.UTC()

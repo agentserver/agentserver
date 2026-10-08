@@ -33,6 +33,7 @@ type EgressCredentialService struct {
 	store                    EgressCredentialStore
 	processProofs            *egresscapability.Verifier
 	processEnvironmentTAEPSM string
+	processEnvironmentScopes *managedcredential.ScopeBindings
 	credentialRefresher      CredentialReferenceRefresher
 	now                      func() time.Time
 	webhookEnabled           bool
@@ -56,6 +57,7 @@ type EgressCredentialServiceConfig struct {
 	Placeholders             corecredentials.PlaceholderVerifier
 	ProcessProofs            *egresscapability.Verifier
 	ProcessEnvironmentTAEPSM string
+	ProcessEnvironmentScopes *managedcredential.ScopeBindings
 	Now                      func() time.Time
 	CredentialRefresher      CredentialReferenceRefresher
 }
@@ -156,6 +158,9 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 }
 
 func NewEgressCredentialService(config EgressCredentialServiceConfig) (*EgressCredentialService, error) {
+	if config.ProcessEnvironmentScopes != nil && config.Placeholders != nil {
+		return nil, errors.New("Kubernetes credential scope bindings cannot enable webhook delivery")
+	}
 	if config.Store == nil || config.Registry == nil || config.Sealer == nil || config.Now == nil ||
 		(config.Placeholders == nil) != (config.ProcessProofs == nil) || config.ProcessEnvironmentTAEPSM == "" ||
 		len(config.ProcessEnvironmentTAEPSM) > 256 || strings.TrimSpace(config.ProcessEnvironmentTAEPSM) != config.ProcessEnvironmentTAEPSM ||
@@ -172,6 +177,7 @@ func NewEgressCredentialService(config EgressCredentialServiceConfig) (*EgressCr
 	return &EgressCredentialService{
 		resolver: resolver, store: config.Store, processProofs: config.ProcessProofs,
 		processEnvironmentTAEPSM: config.ProcessEnvironmentTAEPSM,
+		processEnvironmentScopes: config.ProcessEnvironmentScopes,
 		credentialRefresher:      config.CredentialRefresher,
 		now:                      config.Now, webhookEnabled: config.Placeholders != nil,
 	}, nil
@@ -196,7 +202,11 @@ func (service *EgressCredentialService) ResolveExecutionCredential(
 		return corecontract.ResolveExecutionCredentialResponse{}, errors.New("v2 process environment credential resolver is unavailable")
 	}
 	tool, err := executionCredentialToolForRequest(request)
-	if err != nil || request.TAEPSM != service.processEnvironmentTAEPSM {
+	scope := service.processEnvironmentTAEPSM
+	if service.processEnvironmentScopes != nil {
+		scope, _ = service.processEnvironmentScopes.Scope(request.Operation.EnvironmentID)
+	}
+	if err != nil || scope == "" || request.TAEPSM != scope {
 		return corecontract.ResolveExecutionCredentialResponse{}, &coredb.StateError{
 			Code: coredb.ErrorInvalidArgument, Operation: "ResolveExecutionCredential",
 			Resource: "credential_use", ResourceID: request.Operation.OperationID,

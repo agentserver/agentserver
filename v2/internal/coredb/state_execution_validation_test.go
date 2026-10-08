@@ -2,6 +2,28 @@ package coredb
 
 import "testing"
 
+func TestNotSentOperationRequiresManagedUnacknowledgedShell(t *testing.T) {
+	for _, test := range []struct {
+		provider, tool, kind, state, terminal string
+		want                                  bool
+	}{
+		{"k8s", "shell", "process_start", "dispatching", "failed", true},
+		{"tae", "shell", "process_start", "dispatching", "failed", true},
+		{"agentx", "shell", "process_start", "dispatching", "failed", false},
+		{"k8s", "read_file", "process_start", "dispatching", "failed", false},
+		{"k8s", "shell", "timeout_terminate", "dispatching", "failed", false},
+		{"k8s", "shell", "process_start", "acknowledged", "failed", false},
+		{"k8s", "shell", "process_start", "prepared", "failed", false},
+		{"k8s", "shell", "process_start", "dispatching", "succeeded", false},
+	} {
+		execution := Execution{ToolName: test.tool, Target: DispatchTarget{Kind: test.provider}}
+		operation := ExecutionOperation{Kind: test.kind, Status: test.state}
+		if got := validNotSentOperation(execution, operation, test.terminal); got != test.want {
+			t.Fatalf("%+v got %v", test, got)
+		}
+	}
+}
+
 func TestNullableUUIDPreservesOptionalExecutorIdentity(t *testing.T) {
 	if got := nullableUUID(""); got != nil {
 		t.Fatalf("nullableUUID(empty) = %#v, want nil", got)

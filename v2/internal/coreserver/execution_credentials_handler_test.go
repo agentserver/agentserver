@@ -27,6 +27,7 @@ type testExecutionCredentialStore struct {
 	withoutBinding bool
 	authorityCalls int
 	useCalls       int
+	lastUse        corecredentials.UseRequest
 	events         []coredb.WorkspaceCredentialUseEvent
 }
 
@@ -60,6 +61,7 @@ func (store *testExecutionCredentialStore) ResolveCredentialAuthority(_ context.
 
 func (store *testExecutionCredentialStore) AuthorizeCredentialUse(_ context.Context, request corecredentials.UseRequest) (corecredentials.BindingReference, error) {
 	store.useCalls++
+	store.lastUse = request
 	if err := request.ValidateLiveAuthorityScope(); err != nil {
 		return corecredentials.BindingReference{}, err
 	}

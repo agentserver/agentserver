@@ -22,6 +22,7 @@ type WorkspaceManagedEnvironmentIssuer struct {
 	authorities ManagedCredentialAuthoritySource
 	credentials ManagedProcessCredentialSource
 	taePSM      string
+	scopes      *managedcredential.ScopeBindings
 	logger      *slog.Logger
 }
 
@@ -78,6 +79,13 @@ func NewDefaultWorkspaceManagedEnvironmentIssuer(
 	)
 }
 
+func NewScopedWorkspaceManagedEnvironmentIssuer(authorities ManagedCredentialAuthoritySource, credentials ManagedProcessCredentialSource, scopes *managedcredential.ScopeBindings, logger *slog.Logger) (*WorkspaceManagedEnvironmentIssuer, error) {
+	if authorities == nil || credentials == nil || scopes == nil {
+		return nil, errors.New("managed credential sources and scope bindings are required")
+	}
+	return &WorkspaceManagedEnvironmentIssuer{authorities: authorities, credentials: credentials, scopes: scopes, logger: logger}, nil
+}
+
 func (issuer *WorkspaceManagedEnvironmentIssuer) IssueManagedProcessEnvironment(
 	ctx context.Context,
 	request ManagedProcessEnvironmentRequest,
@@ -128,6 +136,14 @@ func (issuer *WorkspaceManagedEnvironmentIssuer) issueProcessEnvironment(
 	tool managedProcessTool,
 	authority ManagedCredentialAuthority,
 ) (map[string]string, error) {
+	scope := issuer.taePSM
+	if issuer.scopes != nil {
+		var configured bool
+		scope, configured = issuer.scopes.Scope(request.Target.EnvironmentID)
+		if !configured {
+			return nil, errors.New("managed environment has no deployment-owned credential scope")
+		}
+	}
 	if authority.BindingID == "" {
 		if tool.ProviderKind != "lark" {
 			err := fmt.Errorf("%w: workspace has no active ByteCloud credential for managed bkectl", errManagedCredentialNotConfigured)
@@ -138,7 +154,7 @@ func (issuer *WorkspaceManagedEnvironmentIssuer) issueProcessEnvironment(
 		return managedToolBaseEnvironment(tool, ""), nil
 	}
 	credentialStartedAt := time.Now()
-	credential, err := issuer.credentials.ResolveManagedProcessCredential(ctx, request, issuer.taePSM, authority)
+	credential, err := issuer.credentials.ResolveManagedProcessCredential(ctx, request, scope, authority)
 	if err != nil {
 		issuer.logStage(ctx, request, tool, "credential_resolve", "failed", credentialStartedAt, err, authority)
 		return nil, fmt.Errorf("resolve workspace managed process credential: %w", err)
@@ -147,7 +163,7 @@ func (issuer *WorkspaceManagedEnvironmentIssuer) issueProcessEnvironment(
 		credential.ProviderKind != tool.ProviderKind || credential.ApplicationID != authority.ApplicationID ||
 		credential.BindingID != authority.BindingID || credential.AuthorityVersion != authority.AuthorityVersion ||
 		credential.CredentialVersion != authority.CredentialVersion || credential.PolicySHA256 != authority.PolicySHA256 ||
-		credential.TAEPSM != issuer.taePSM ||
+		credential.TAEPSM != scope ||
 		(tool.ProviderKind == "lark" && !managedLarkApplicationIDPattern.MatchString(credential.ApplicationID)) {
 		err := errors.New("Core returned an inconsistent workspace managed process credential")
 		issuer.logStage(ctx, request, tool, "credential_resolve", "failed", credentialStartedAt, err, authority)

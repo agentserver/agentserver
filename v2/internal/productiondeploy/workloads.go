@@ -327,7 +327,7 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_IDS", managedSandboxGatewayIdentities),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_PROFILE_CATALOG", managedSandboxCatalog),
 		)
-		environment = append(environment, managedCredentialScopeEnvironment(document.Managed)...)
+		environment = append(environment, managedCredentialScopeEnvironment(document)...)
 		if document.Managed.Provider == "k8s" {
 			environment = append(environment, secretEnvironment("AGENTSERVER_V2_EXTERNAL_MANAGED_SANDBOX_TOKEN", document.Secrets.Core, "external-managed-sandbox-token"))
 		}
@@ -612,7 +612,7 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_KEY_ID", ProductionSandboxFencerKeyID),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("sandbox-fencer-capability.key")),
 		)
-		environment = append(environment, managedCredentialScopeEnvironment(document.Managed)...)
+		environment = append(environment, managedCredentialScopeEnvironment(document)...)
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			environment = append(environment,
 				valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_ISSUER", issuer),

@@ -17,6 +17,18 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
+func TestKubernetesCredentialScopeConfigurationFailsClosed(t *testing.T) {
+	configuration := map[string]string{"AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE": "sg-managed-cli", "AGENTSERVER_V2_MANAGED_WEBHOOK_REQUIRED": "false"}
+	getenv := func(name string) string { return configuration[name] }
+	for _, raw := range []string{"", "[]", `[{"environmentId":"aaaaaaaa-1111-4444-8888-111111111111","scope":"sg-managed-cli"}]`} {
+		configuration[managedcredential.ScopeBindingsEnvironment] = raw
+		_, err := configureManagedProcessEnvironmentIssuer(getenv, gatewayServeProduction, testManagedCredentialAuthority(t), staticManagedProcessCredentialSource{})
+		if (err == nil) != (len(raw) > 2) {
+			t.Fatalf("scope configuration %q: %v", raw, err)
+		}
+	}
+}
+
 func TestConfigureManagedExecutionSecurityLoadsSeparatedSigners(t *testing.T) {
 	configuration, egressPublicKey := validManagedBackendConfiguration(t, true)
 	getenv := func(name string) string { return configuration[name] }

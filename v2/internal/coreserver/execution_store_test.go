@@ -184,6 +184,7 @@ func testPrepareExecutionContractRequest() corecontract.PrepareExecutionRequest 
 }
 
 type recordingExecutionStateStore struct {
+	completeOperation     coredb.CompleteOperationCommand
 	prepareExecutionCalls int
 	skipOperationCalls    int
 	execution             coredb.Execution
@@ -239,6 +240,7 @@ func (store *recordingExecutionStateStore) AcknowledgeOperation(_ context.Contex
 }
 
 func (store *recordingExecutionStateStore) CompleteOperation(_ context.Context, command coredb.CompleteOperationCommand) (coredb.CompleteOperationResult, error) {
+	store.completeOperation = command
 	store.execution.Version++
 	store.operation.Version++
 	store.operation.Status = command.TerminalStatus

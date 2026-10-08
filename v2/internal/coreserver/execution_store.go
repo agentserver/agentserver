@@ -186,7 +186,12 @@ func (commands StateStoreExecutionCommands) CompleteOperation(ctx context.Contex
 	if err != nil {
 		return corecontract.CompleteOperationResponse{}, executionCommandConversionError("CompleteOperation", "operation", request.OperationID, fmt.Errorf("result: %w", err))
 	}
+	notSent, err := managedProcessNotSentEvidence(request.TerminalStatus, request.Result)
+	if err != nil {
+		return corecontract.CompleteOperationResponse{}, executionCommandConversionError("CompleteOperation", "operation", request.OperationID, err)
+	}
 	result, err := commands.Store.CompleteOperation(ctx, coredb.CompleteOperationCommand{
+		DispatchNotSent:      notSent,
 		OperationID:          request.OperationID,
 		ExecutionID:          request.ExecutionID,
 		RunID:                request.RunID,
@@ -210,6 +215,39 @@ func (commands StateStoreExecutionCommands) CompleteOperation(ctx context.Contex
 		Operation: contractExecutionOperation(result.Operation),
 		Changed:   result.Changed,
 	}, nil
+}
+
+// The executor authenticates with its own workload identity. Accept an explicit
+// pre-dispatch failure assertion only when the hashed evidence agrees; never
+// interpret lack of an acknowledgement alone as proof that nothing was sent.
+func managedProcessNotSentEvidence(status string, raw json.RawMessage) (bool, error) {
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return false, err
+	}
+	if _, present := result["dispatchOutcome"]; !present {
+		return false, nil
+	}
+	var evidence struct {
+		DispatchOutcome string `json:"dispatchOutcome"`
+		Kind            string `json:"kind"`
+		Status          string `json:"status"`
+		ReasonCode      string `json:"reasonCode"`
+		Acknowledged    *bool  `json:"acknowledged"`
+		OutputComplete  bool   `json:"outputComplete"`
+		ExitCode        *int32 `json:"exitCode"`
+	}
+	if err := json.Unmarshal(raw, &evidence); err != nil || evidence.DispatchOutcome != "not_sent" ||
+		status != "failed" || evidence.Status != "failed" || evidence.Kind != "process_start" ||
+		evidence.Acknowledged == nil || *evidence.Acknowledged || !evidence.OutputComplete || evidence.ExitCode != nil {
+		return false, errors.New("invalid managed process not-sent evidence")
+	}
+	switch evidence.ReasonCode {
+	case "credential_not_configured", "bytecloud_aksk_required", "credential_unauthorized", "forbidden", "context_deadline_exceeded", "context_canceled", "environment_injection_failed":
+		return true, nil
+	default:
+		return false, errors.New("invalid managed process pre-dispatch failure reason")
+	}
 }
 
 func (commands StateStoreExecutionCommands) SkipOperation(ctx context.Context, request corecontract.SkipOperationRequest) (corecontract.SkipOperationResponse, error) {

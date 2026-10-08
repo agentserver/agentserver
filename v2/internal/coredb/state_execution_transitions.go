@@ -290,7 +290,10 @@ func (s *StateStore) CompleteOperation(ctx context.Context, command CompleteOper
 		if executionOperation.Version != command.ExpectedOperationVersion {
 			return CompleteOperationResult{}, versionConflict(operation, "operation", executionOperation.ID, executionOperation.Version)
 		}
-		if executionOperation.Status == OperationStatusDispatching && command.TerminalStatus != OperationStatusUnknown {
+		if command.DispatchNotSent && !validNotSentOperation(execution, executionOperation, command.TerminalStatus) {
+			return CompleteOperationResult{}, commandError(ErrorInvalidState, operation, "operation", executionOperation.ID, "not-sent evidence requires a dispatching managed shell process_start failure")
+		}
+		if executionOperation.Status == OperationStatusDispatching && command.TerminalStatus != OperationStatusUnknown && !command.DispatchNotSent {
 			return CompleteOperationResult{}, commandError(ErrorInvalidState, operation, "operation", executionOperation.ID, "dispatching without acknowledgement can only close as unknown")
 		}
 		if executionOperation.Status != OperationStatusDispatching && executionOperation.Status != OperationStatusAcknowledged {
@@ -308,6 +311,7 @@ func (s *StateStore) CompleteOperation(ctx context.Context, command CompleteOper
 UPDATE %s
 SET status = $1,
     terminal_result_hash = $2,
+    dispatch_not_sent = $5,
     terminal_at = pg_catalog.clock_timestamp(),
     version = version + 1,
     updated_at = pg_catalog.clock_timestamp()
@@ -318,6 +322,7 @@ RETURNING %s`, s.table("execution_operations"), executionOperationColumns(""))
 			resultHash[:],
 			executionOperation.ID,
 			executionOperation.Version,
+			command.DispatchNotSent,
 		))
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -582,10 +587,20 @@ func validateCompleteOperation(command CompleteOperationCommand) error {
 	if !isDispatchedTerminalOperationStatus(command.TerminalStatus) {
 		return errors.New("terminal_status must be succeeded, failed, cancelled, or unknown")
 	}
+	if command.DispatchNotSent && command.TerminalStatus != OperationStatusFailed {
+		return errors.New("not-sent operations must fail")
+	}
 	if err := validateCanonicalHash("result_hash", command.ResultHash, HashDomainOperationResult); err != nil {
 		return err
 	}
 	return validateTransitionRecord(command.Record)
+}
+
+func validNotSentOperation(execution Execution, operation ExecutionOperation, terminalStatus string) bool {
+	return terminalStatus == OperationStatusFailed && execution.ToolName == "shell" &&
+		(execution.Target.Kind == "k8s" || execution.Target.Kind == "tae") &&
+		operation.Kind == "process_start" && operation.Status == OperationStatusDispatching &&
+		operation.AcknowledgedAt == nil
 }
 
 func validateSkipOperation(command SkipOperationCommand) error {

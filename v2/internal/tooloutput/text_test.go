@@ -58,6 +58,25 @@ func TestUnknownFailureDoesNotInventExitCode(t *testing.T) {
 	}
 }
 
+func TestNotSentFailureIsReadableAndDoesNotInventProcessOutput(t *testing.T) {
+	wire := shell()
+	wire["chunks"] = []any{}
+	delete(wire, "exit_code")
+	wire["status"], wire["reason_code"], wire["dispatch_outcome"] = "failed", "credential_unauthorized", "not_sent"
+	text, _, err := Render("executor", "shell", wireJSON(t, wire), 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, body, ok := Parse(text)
+	if !ok || s.Status != "failed" || s.DispatchOutcome != "not_sent" || s.ExitCode != nil || !strings.Contains(body, "Command was not started") || strings.Contains(body, "(no output)") {
+		t.Fatal(text)
+	}
+	wire["exit_code"] = 0
+	if _, _, err := Render("executor", "shell", wireJSON(t, wire), 4096); err == nil {
+		t.Fatal("not-sent command acquired an exit code")
+	}
+}
+
 func TestShellRejectsCorruptTransportAndLeavesUserBase64TextAlone(t *testing.T) {
 	for _, change := range []func(map[string]any){
 		func(w map[string]any) {

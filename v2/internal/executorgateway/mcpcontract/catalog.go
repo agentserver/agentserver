@@ -168,6 +168,7 @@ const shellOutputSchema = `{
     "process_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
     "status": {"enum": ["succeeded", "failed", "unknown"]},
     "reason_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,127}$"},
+    "dispatch_outcome": {"enum": ["not_sent"]},
     "chunks": {
       "type": "array",
       "maxItems": 50000,

@@ -78,6 +78,11 @@ VALUES ($1, $2, 'bytecloud', 'Workspace ByteCloud', 'workspace',
 	if err != nil || live != reference {
 		t.Fatalf("live ByteCloud process_env authority = %+v, %v; want %+v", live, err, reference)
 	}
+	wrongScope := use
+	wrongScope.TAEPSM = "another-region-managed-cli"
+	if _, err := fixture.store.AuthorizeCredentialUse(t.Context(), wrongScope); !HasStateErrorCode(err, ErrorForbidden) {
+		t.Fatalf("credential scope mismatch was not denied: %v", err)
+	}
 	use.CredentialMode = managedcredential.ModeWebhookSwap
 	if _, err := fixture.store.AuthorizeCredentialUse(t.Context(), use); !HasStateErrorCode(err, ErrorForbidden) {
 		t.Fatalf("ByteCloud webhook authority error = %v, want forbidden", err)

@@ -2,6 +2,7 @@ package executorgateway
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,59 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
+
+func TestScopedIssuerUsesExactEnvironmentAndChecksResponseScope(t *testing.T) {
+	const sg = "aaaaaaaa-1111-4444-8888-111111111111"
+	const cn = "bbbbbbbb-1111-4444-8888-111111111111"
+	scopes, err := managedcredential.ParseScopeBindings(fmt.Sprintf(`[{"environmentId":%q,"scope":"sg-managed-cli"},{"environmentId":%q,"scope":"cn-managed-cli"}]`, sg, cn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := ManagedCredentialAuthority{CredentialMode: managedcredential.ModeProcessEnv, ProviderKind: bkectlpolicy.CredentialKind, BindingID: "90000000-0000-4000-8000-000000000009", AuthorityVersion: 3, CredentialVersion: 7, PolicySHA256: bkectlpolicy.SHA256Hex()}
+	for _, test := range []struct {
+		env, want, returned string
+		fail                bool
+	}{
+		{sg, "sg-managed-cli", "sg-managed-cli", false}, {cn, "cn-managed-cli", "cn-managed-cli", false},
+		{cn, "cn-managed-cli", "sg-managed-cli", true}, {"cccccccc-1111-4444-8888-111111111111", "", "", true},
+	} {
+		t.Run(test.env+"/"+test.returned, func(t *testing.T) {
+			calls := 0
+			issuer, err := NewScopedWorkspaceManagedEnvironmentIssuer(
+				workspaceAuthoritySourceFunc(func(context.Context, ManagedProcessEnvironmentRequest) (ManagedCredentialAuthority, error) {
+					return authority, nil
+				}),
+				workspaceProcessCredentialSourceFunc(func(_ context.Context, _ ManagedProcessEnvironmentRequest, scope string, selected ManagedCredentialAuthority) (ManagedProcessCredential, error) {
+					calls++
+					if scope != test.want {
+						t.Fatalf("wrong request scope: %s", scope)
+					}
+					return ManagedProcessCredential{Configured: true, CredentialMode: selected.CredentialMode, ProviderKind: selected.ProviderKind, BindingID: selected.BindingID, AuthorityVersion: selected.AuthorityVersion, CredentialVersion: selected.CredentialVersion, PolicySHA256: selected.PolicySHA256, TAEPSM: test.returned, Environment: map[string]string{bkectlpolicy.AccessKeyEnvironment: "test-ak", bkectlpolicy.SecretKeyEnvironment: "test-sk"}}, nil
+				}), scopes, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := testManagedLarkEnvironmentRequest(time.Now())
+			request.Target.Kind = executionbackend.KindKubernetes
+			request.Target.EnvironmentID = test.env
+			request.Executable = bkectlpolicy.Executable
+			request.Arguments = []string{"k8s", "pod", "get", "--name", "demo"}
+			env, err := issuer.IssueManagedProcessEnvironment(t.Context(), request)
+			if (err != nil) != test.fail {
+				t.Fatalf("issuer error %v, want failure %v", err, test.fail)
+			}
+			if test.want == "" && calls != 0 {
+				t.Fatal("unknown environment reached credential resolver")
+			}
+			if test.fail && len(env) != 0 {
+				t.Fatal("rejected scope leaked credential")
+			}
+			if !test.fail && (calls != 1 || env[bkectlpolicy.AccessKeyEnvironment] != "test-ak") {
+				t.Fatal("credential was not injected")
+			}
+		})
+	}
+}
 
 func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudAKSKForBkectl(t *testing.T) {
 	testBkectlProcessCredential(t, executionbackend.KindTAE)

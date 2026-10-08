@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -99,6 +100,9 @@ func TestKubernetesChartRendersExecutableGraphWithoutTAE(t *testing.T) {
 		}
 	}
 	env := deploymentLiteralEnvironment(t, runtime, "sandbox-gateway-k8s")
+	if env("AGENTSERVER_V2_SANDBOX_SCOPE") != d.Managed.Kubernetes.Scope {
+		t.Fatal("SG gateway changed immutable reservation scope")
+	}
 	if env("AGENTSERVER_V2_SANDBOX_PROVIDER") != "k8s" || env("AGENTSERVER_V2_SANDBOX_NAMESPACE") != "agentserver-sandboxes" {
 		t.Fatal("gateway configuration missing")
 	}
@@ -216,6 +220,18 @@ func TestCNRenderedControlPlaneGraph(t *testing.T) {
 	}
 	foundation := parseKubernetesList(t, mustBundleFile(t, bundle, foundationFile))
 	runtime := parseKubernetesList(t, mustBundleFile(t, bundle, runtimeFile))
+	for _, component := range []string{coreComponent, executorComponent} {
+		raw := deploymentLiteralEnvironment(t, runtime, component)(managedcredential.ScopeBindingsEnvironment)
+		scopes, err := managedcredential.ParseScopeBindings(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for env, want := range map[string]string{cn.Environment.EnvironmentID: "cn-managed-cli", d.Managed.Environment.EnvironmentID: "sg-managed-cli"} {
+			if got, ok := scopes.Scope(env); !ok || got != want {
+				t.Fatalf("%s routes %s to %q, want %s", component, env, got, want)
+			}
+		}
+	}
 	if findResourceOptional(runtime, "Deployment", cn.Gateway.Component) != nil || findResourceOptional(foundation, "Service", cn.Gateway.Component) != nil {
 		t.Fatal("external CN gateway was rendered locally in SG")
 	}

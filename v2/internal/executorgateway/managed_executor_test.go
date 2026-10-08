@@ -173,7 +173,7 @@ func TestManagedShellLogsSafeProcessEnvironmentFailureBeforeBackendDispatch(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "unknown" || result.OutputComplete || len(backend.StartCalls()) != 0 {
+	if result.Status != "failed" || !result.OutputComplete || result.DispatchOutcome != "not_sent" || result.ReasonCode != "environment_injection_failed" || len(backend.StartCalls()) != 0 {
 		t.Fatalf("managed environment failure result/calls = %+v / %d", result, len(backend.StartCalls()))
 	}
 	logged := logs.String()
@@ -213,7 +213,7 @@ func TestManagedShellReturnsCredentialNotConfiguredBeforeBackendDispatch(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != "unknown" || result.ReasonCode != "credential_not_configured" || !result.OutputComplete || len(backend.StartCalls()) != 0 {
+	if result.Status != "failed" || result.DispatchOutcome != "not_sent" || result.ReasonCode != "credential_not_configured" || !result.OutputComplete || len(backend.StartCalls()) != 0 {
 		t.Fatalf("managed missing credential result/calls = %+v / %d", result, len(backend.StartCalls()))
 	}
 	logged := logs.String()
@@ -243,12 +243,29 @@ func TestManagedShellReportsLegacyByteCloudCredentialWithoutStartingProcess(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ReasonCode != "bytecloud_aksk_required" || !result.OutputComplete || result.ExitCode != nil || len(backend.StartCalls()) != 0 {
+	if result.Status != "failed" || result.DispatchOutcome != "not_sent" || result.ReasonCode != "bytecloud_aksk_required" || !result.OutputComplete || result.ExitCode != nil || len(backend.StartCalls()) != 0 {
 		t.Fatalf("credential precondition result: %+v, backend starts %d", result, len(backend.StartCalls()))
 	}
 	raw, _ := json.Marshal(result)
 	if strings.Contains(string(raw), "private payload") {
 		t.Fatal("untrusted Core error leaked")
+	}
+}
+
+func TestManagedEnvironmentFailureUsesOnlySafeNotSentReasons(t *testing.T) {
+	for _, test := range []struct{ code, want string }{
+		{"credential_unauthorized", "credential_unauthorized"},
+		{"forbidden", "forbidden"},
+		{"secret-value", "environment_injection_failed"},
+	} {
+		result := managedEnvironmentFailureShellResult("process-1", &CoreCommandError{Code: test.code, HTTPStatus: 403, Message: "secret-message"})
+		if result.Status != "failed" || result.DispatchOutcome != "not_sent" || result.ReasonCode != test.want || !result.OutputComplete || result.ExitCode != nil {
+			t.Fatalf("bad pre-dispatch result: %+v", result)
+		}
+		raw, _ := json.Marshal(result)
+		if strings.Contains(string(raw), "secret-") {
+			t.Fatal("credential error leaked")
+		}
 	}
 }
 

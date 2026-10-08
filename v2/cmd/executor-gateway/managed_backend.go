@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcapability"
 	"github.com/agentserver/agentserver/v2/internal/sandboxclient"
 )
@@ -254,6 +255,15 @@ func configureManagedProcessEnvironmentIssuer(
 	if scopeName == "AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE" && webhookRequired {
 		return nil, errors.New("Kubernetes credentials support process_env only")
 	}
+	var scopes *managedcredential.ScopeBindings
+	if scopeName == "AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE" {
+		scopes, err = managedcredential.ParseScopeBindings(getenv(managedcredential.ScopeBindingsEnvironment))
+		if err != nil {
+			return nil, err
+		}
+	} else if getenv(managedcredential.ScopeBindingsEnvironment) != "" {
+		return nil, errors.New("credential scope bindings require the Kubernetes provider")
+	}
 	egressNames := []string{gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment, gatewayEgressPlaceholderKeyEnvironment}
 	if !webhookRequired {
 		for _, name := range egressNames {
@@ -263,6 +273,9 @@ func configureManagedProcessEnvironmentIssuer(
 		}
 		if coreAuthorities == nil || coreProcessCredentials == nil {
 			return nil, errors.New("direct managed credential sources must be v2 Core")
+		}
+		if scopes != nil {
+			return executorgateway.NewScopedWorkspaceManagedEnvironmentIssuer(coreAuthorities, coreProcessCredentials, scopes, slog.Default())
 		}
 		issuer, err := executorgateway.NewDirectWorkspaceManagedEnvironmentIssuer(
 			coreAuthorities, coreProcessCredentials, taePSM, slog.Default(),

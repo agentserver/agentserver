@@ -428,7 +428,10 @@ func (authority *fakeShellAuthority) CompleteOperation(_ context.Context, reques
 	if request.ExpectedExecutionVersion != authority.execution.Version || request.ExpectedOperationVersion != operation.Version {
 		return CompleteOperationResult{}, errors.New("complete operation version mismatch")
 	}
-	if operation.Status == "dispatching" && request.TerminalStatus != "unknown" {
+	var evidence shellOperationTerminalResult
+	_ = json.Unmarshal(request.Result, &evidence)
+	notSent := evidence.DispatchOutcome == "not_sent" && evidence.Status == "failed" && !evidence.Acknowledged && evidence.OutputComplete && evidence.ExitCode == nil && operation.Kind == "process_start" && request.Target.Kind.Managed()
+	if operation.Status == "dispatching" && request.TerminalStatus != "unknown" && !(request.TerminalStatus == "failed" && notSent) {
 		return CompleteOperationResult{}, errors.New("unacknowledged operation completed as known")
 	}
 	authority.record(request.Record)

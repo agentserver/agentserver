@@ -28,6 +28,7 @@ type Summary struct {
 	Status           string  `json:"status"`
 	ProcessID        string  `json:"process_id,omitempty"`
 	ReasonCode       string  `json:"reason_code,omitempty"`
+	DispatchOutcome  string  `json:"dispatch_outcome,omitempty"`
 	ExitCode         *int32  `json:"exit_code,omitempty"`
 	SandboxDenied    *bool   `json:"sandbox_denied,omitempty"`
 	TimedOut         *bool   `json:"timed_out,omitempty"`
@@ -45,15 +46,16 @@ type Summary struct {
 }
 
 type shellWire struct {
-	ProcessID      string `json:"process_id"`
-	Status         string `json:"status"`
-	ReasonCode     string `json:"reason_code"`
-	ExitCode       *int32 `json:"exit_code"`
-	SandboxDenied  bool   `json:"sandbox_denied"`
-	TimedOut       bool   `json:"timed_out"`
-	OutputComplete *bool  `json:"output_complete"`
-	NextSequence   uint64 `json:"next_sequence"`
-	Chunks         *[]struct {
+	ProcessID       string `json:"process_id"`
+	Status          string `json:"status"`
+	ReasonCode      string `json:"reason_code"`
+	DispatchOutcome string `json:"dispatch_outcome"`
+	ExitCode        *int32 `json:"exit_code"`
+	SandboxDenied   bool   `json:"sandbox_denied"`
+	TimedOut        bool   `json:"timed_out"`
+	OutputComplete  *bool  `json:"output_complete"`
+	NextSequence    uint64 `json:"next_sequence"`
+	Chunks          *[]struct {
 		Sequence uint64 `json:"sequence"`
 		Stream   string `json:"stream"`
 		Chunk    string `json:"chunk_base64"`
@@ -91,6 +93,9 @@ func decodeShell(raw []byte) (Summary, string, error) {
 	}
 	if !validStatus(wire.Status) || wire.Chunks == nil || wire.OutputComplete == nil {
 		return Summary{}, "", errors.New("missing shell result fields")
+	}
+	if wire.DispatchOutcome != "" && (wire.DispatchOutcome != "not_sent" || wire.Status != "failed" || wire.ExitCode != nil || !*wire.OutputComplete || len(*wire.Chunks) != 0) {
+		return Summary{}, "", errors.New("inconsistent shell pre-dispatch failure")
 	}
 	streams := map[string][]byte{}
 	var order []string
@@ -133,9 +138,21 @@ func decodeShell(raw []byte) (Summary, string, error) {
 		}
 	}
 	if len(order) == 0 {
-		body.WriteString("(no output)")
+		if wire.DispatchOutcome == "not_sent" {
+			body.WriteString("Command was not started: managed process environment setup failed before dispatch. ")
+			switch wire.ReasonCode {
+			case "credential_unauthorized", "forbidden":
+				body.WriteString("Credential authorization was rejected; check the environment scope and workspace access. This does not establish that the saved credentials are invalid.")
+			case "credential_not_configured", "bytecloud_aksk_required":
+				body.WriteString("Configure a default ByteCloud AK/SK credential in this workspace.")
+			default:
+				body.WriteString("Check the executor/Core service logs for the failure reason.")
+			}
+		} else {
+			body.WriteString("(no output)")
+		}
 	}
-	return Summary{Format: ShellFormat, Status: wire.Status, ProcessID: wire.ProcessID, ReasonCode: wire.ReasonCode, ExitCode: wire.ExitCode, SandboxDenied: &wire.SandboxDenied, TimedOut: &wire.TimedOut, OutputComplete: wire.OutputComplete, NextSequence: wire.NextSequence}, body.String(), nil
+	return Summary{Format: ShellFormat, Status: wire.Status, ProcessID: wire.ProcessID, ReasonCode: wire.ReasonCode, DispatchOutcome: wire.DispatchOutcome, ExitCode: wire.ExitCode, SandboxDenied: &wire.SandboxDenied, TimedOut: &wire.TimedOut, OutputComplete: wire.OutputComplete, NextSequence: wire.NextSequence}, body.String(), nil
 }
 
 func decodeFile(raw []byte) (Summary, string, error) {

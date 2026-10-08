@@ -1,6 +1,7 @@
 package productiondeploy
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/kubernetesresources"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 )
 
@@ -228,9 +230,23 @@ func kubernetesRuntimeProxyURL(clusterDomain string) string {
 	return "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc." + clusterDomain + ":1080"
 }
 
-func managedCredentialScopeEnvironment(m ManagedExecutorDocument) []any {
+func kubernetesCredentialScope(d ConfigDocument, region string) string {
+	if region == managedsandboxprofile.RegionCN {
+		// Matches the separately deployed CN gateway and existing reservations.
+		return "cn-managed-cli"
+	}
+	return d.Managed.Kubernetes.Scope
+}
+
+func managedCredentialScopeEnvironment(d ConfigDocument) []any {
+	m := d.Managed
 	if m.Provider == "k8s" {
-		return []any{valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE", m.Kubernetes.Scope), valueEnvironment("AGENTSERVER_V2_MANAGED_WEBHOOK_REQUIRED", "false")}
+		bindings := make([]managedcredential.ScopeBinding, 0, len(d.SandboxProfiles))
+		for _, profile := range d.SandboxProfiles {
+			bindings = append(bindings, managedcredential.ScopeBinding{EnvironmentID: profile.Environment.EnvironmentID, Scope: kubernetesCredentialScope(d, profile.Region)})
+		}
+		raw, _ := json.Marshal(bindings)
+		return []any{valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE", m.Kubernetes.Scope), valueEnvironment("AGENTSERVER_V2_MANAGED_WEBHOOK_REQUIRED", "false"), valueEnvironment(managedcredential.ScopeBindingsEnvironment, string(raw))}
 	}
 	return []any{valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", m.TAE.PSM), valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(m.TAE.Policy.PublicWebhookRequired))}
 }
@@ -258,7 +274,7 @@ func renderKubernetesGateway(c renderContext, p LoadedManagedSandboxProfile) (ku
 		valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, d.Services.Core.Port)), valueEnvironment("AGENTSERVER_V2_CORE_CA_FILE", serviceMaterialPath("ca.crt")), valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_CERT_FILE", serviceMaterialPath("tls.crt")), valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_KEY_FILE", serviceMaterialPath("tls.key")), valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_CAPABILITY_KEYRING_FILE", serviceMaterialPath("sandbox-capability-keyring.json")),
 		valueEnvironment("AGENTSERVER_V2_RUNTIME_CA_FILE", serviceMaterialPath("runtime-ca.crt")), valueEnvironment("AGENTSERVER_V2_RUNTIME_CLIENT_CERT_FILE", serviceMaterialPath("runtime-client.crt")), valueEnvironment("AGENTSERVER_V2_RUNTIME_CLIENT_KEY_FILE", serviceMaterialPath("runtime-client.key")), valueEnvironment("AGENTSERVER_V2_RUNTIME_SERVER_NAME", k.RuntimeServerName),
-		valueEnvironment("AGENTSERVER_V2_SANDBOX_PROVIDER", "k8s"), valueEnvironment("AGENTSERVER_V2_SANDBOX_REGION", p.Document.Region), valueEnvironment("AGENTSERVER_V2_SANDBOX_SCOPE", k.Scope+"-"+p.Document.Region), valueEnvironment("AGENTSERVER_V2_SANDBOX_NAMESPACE", k.Namespace), valueEnvironment("AGENTSERVER_V2_SANDBOX_POOL", k.Pool), valueEnvironment("AGENTSERVER_V2_CLUSTER_DOMAIN", d.ClusterDomain),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_PROVIDER", "k8s"), valueEnvironment("AGENTSERVER_V2_SANDBOX_REGION", p.Document.Region), valueEnvironment("AGENTSERVER_V2_SANDBOX_SCOPE", kubernetesCredentialScope(d, p.Document.Region)), valueEnvironment("AGENTSERVER_V2_SANDBOX_NAMESPACE", k.Namespace), valueEnvironment("AGENTSERVER_V2_SANDBOX_POOL", k.Pool), valueEnvironment("AGENTSERVER_V2_CLUSTER_DOMAIN", d.ClusterDomain),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_EXTERNAL_TLS", strconv.FormatBool(g.External)),
 		valueEnvironment("AGENTSERVER_V2_MANAGED_IDLE_TTL", p.Document.Environment.IdleTTL), valueEnvironment("AGENTSERVER_V2_MANAGED_WORKSPACE_ALLOWLIST", workspaceAllowlist), valueEnvironment("AGENTSERVER_V2_SANDBOX_ENSURE_TIMEOUT", "3m"), valueEnvironment("AGENTSERVER_V2_SANDBOX_ENSURE_POLL_INTERVAL", "1s"),
 	}

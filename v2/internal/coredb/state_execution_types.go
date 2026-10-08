@@ -195,6 +195,10 @@ type AcknowledgeOperationResult struct {
 }
 
 type CompleteOperationCommand struct {
+	// DispatchNotSent is trusted executor evidence, bound to ResultHash by
+	// the Core request converter. Only managed shell pre-dispatch failures
+	// may use it; it is not an acknowledgement from the backend.
+	DispatchNotSent          bool
 	OperationID              string
 	ExecutionID              string
 	RunID                    string

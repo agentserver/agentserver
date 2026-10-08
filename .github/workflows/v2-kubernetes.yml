@@ -149,6 +149,22 @@ jobs:
       - name: Test chart-only changes
         if: ${{ inputs.chart_only || contains(github.event.head_commit.message, '[k8s chart]') }}
         run: go -C v2 test ./internal/productiondeploy
+      - name: Verify managed credential and pre-dispatch state transitions with PostgreSQL
+        if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') }}
+        run: |
+          set -euo pipefail
+          test_database="agentserver-scope-test-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker rm -f "$test_database" >/dev/null 2>&1 || true' EXIT
+          docker run --detach --name "$test_database" \
+            -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:17
+          for attempt in $(seq 1 30); do
+            if docker exec "$test_database" pg_isready -U postgres; then break; fi
+            sleep 2
+          done
+          AGENTSERVER_RUN_POSTGRES_TESTS=1 \
+          AGENTSERVER_V2_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable' \
+          go -C v2 test ./internal/coredb -count=1 \
+            -run 'TestPostgreSQL(ManagedNotSentFailure|KubernetesByteCloudCredentialUsesProcessEnvironment|ByteCloudCredentialUsesProcessEnvironmentIndependentOfLarkMode|ExecutionCrashAfterDispatchCommitDoesNotAuthorizeReplay)'
       - name: Exercise stock Codex and previous-session upgrade on native Linux
         if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && inputs.application_repair != 'service' && !contains(github.event.head_commit.message, '[k8s service]') }}
         run: |

@@ -31,15 +31,16 @@ type ShellV1OutputChunk struct {
 }
 
 type ShellV1Result struct {
-	ProcessID      string               `json:"process_id"`
-	Status         string               `json:"status"`
-	ReasonCode     string               `json:"reason_code,omitempty"`
-	Chunks         []ShellV1OutputChunk `json:"chunks"`
-	NextSequence   uint64               `json:"next_sequence"`
-	ExitCode       *int32               `json:"exit_code,omitempty"`
-	SandboxDenied  bool                 `json:"sandbox_denied"`
-	TimedOut       bool                 `json:"timed_out"`
-	OutputComplete bool                 `json:"output_complete"`
+	ProcessID       string               `json:"process_id"`
+	Status          string               `json:"status"`
+	ReasonCode      string               `json:"reason_code,omitempty"`
+	DispatchOutcome string               `json:"dispatch_outcome,omitempty"`
+	Chunks          []ShellV1OutputChunk `json:"chunks"`
+	NextSequence    uint64               `json:"next_sequence"`
+	ExitCode        *int32               `json:"exit_code,omitempty"`
+	SandboxDenied   bool                 `json:"sandbox_denied"`
+	TimedOut        bool                 `json:"timed_out"`
+	OutputComplete  bool                 `json:"output_complete"`
 }
 
 type ShellExecutorConfig struct {
@@ -825,13 +826,13 @@ func marshalBackendAcknowledgement(requestID string, acknowledgement executionba
 
 func (executor *ShellExecutor) closeWithoutStartExchange(ctx context.Context, state *shellExecutionState, plan ShellV1Plan, result ShellV1Result, dispatchErr error) (ShellV1Result, error) {
 	operationResult, err := json.Marshal(shellOperationTerminalResult{
-		Kind: ShellV1OperationProcessStart, ProcessID: plan.ProcessID, Status: "unknown",
-		ReasonCode: result.ReasonCode, OutputComplete: result.OutputComplete,
+		Kind: ShellV1OperationProcessStart, ProcessID: plan.ProcessID, Status: result.Status,
+		ReasonCode: result.ReasonCode, OutputComplete: result.OutputComplete, DispatchOutcome: result.DispatchOutcome,
 	})
 	if err != nil {
 		return ShellV1Result{}, err
 	}
-	if _, err := state.CompleteOperation(ctx, plan.Start, "unknown", operationResult); err != nil {
+	if _, err := state.CompleteOperation(ctx, plan.Start, result.Status, operationResult); err != nil {
 		return ShellV1Result{}, errors.Join(dispatchErr, err)
 	}
 	if _, err := state.SkipTimeoutIfPrepared(ctx, "process_start_dispatch_failed"); err != nil {
@@ -841,7 +842,7 @@ func (executor *ShellExecutor) closeWithoutStartExchange(ctx context.Context, st
 	if err != nil {
 		return ShellV1Result{}, err
 	}
-	if _, err := state.CompleteExecution(ctx, "unknown", resultJSON); err != nil {
+	if _, err := state.CompleteExecution(ctx, result.Status, resultJSON); err != nil {
 		return ShellV1Result{}, errors.Join(dispatchErr, err)
 	}
 	return result, nil
@@ -1013,27 +1014,30 @@ func newUnknownShellResult(processID string) ShellV1Result {
 
 func managedEnvironmentFailureShellResult(processID string, err error) ShellV1Result {
 	reasonCode, _ := managedExecutionErrorMetadata(err)
-	if reasonCode != "credential_not_configured" && reasonCode != "bytecloud_aksk_required" {
-		return newUnknownShellResult(processID)
+	switch reasonCode {
+	case "credential_not_configured", "bytecloud_aksk_required", "credential_unauthorized", "forbidden", "context_deadline_exceeded", "context_canceled":
+	default:
+		// Never copy arbitrary Core/provider error text or codes into tool output.
+		reasonCode = "environment_injection_failed"
 	}
 	return ShellV1Result{
-		// No backend request was made. Preserve the conservative unacknowledged
-		// operation status, but report the actionable credential prerequisite
-		// instead of pretending that process output was lost.
-		ProcessID: processID, Status: "unknown", ReasonCode: reasonCode,
+		// This branch precedes StartProcess: there is no process/exit code to
+		// invent, and no uncertain dispatch that would justify "unknown".
+		ProcessID: processID, Status: "failed", ReasonCode: reasonCode, DispatchOutcome: "not_sent",
 		Chunks: []ShellV1OutputChunk{}, NextSequence: 1, OutputComplete: true,
 	}
 }
 
 type shellOperationTerminalResult struct {
-	Kind           string `json:"kind"`
-	ProcessID      string `json:"processId"`
-	Status         string `json:"status"`
-	ReasonCode     string `json:"reasonCode,omitempty"`
-	Acknowledged   bool   `json:"acknowledged"`
-	ResponseError  bool   `json:"responseError"`
-	ExitCode       *int32 `json:"exitCode"`
-	SandboxDenied  bool   `json:"sandboxDenied"`
-	OutputComplete bool   `json:"outputComplete"`
-	LastSequence   uint64 `json:"lastSequence"`
+	Kind            string `json:"kind"`
+	ProcessID       string `json:"processId"`
+	Status          string `json:"status"`
+	ReasonCode      string `json:"reasonCode,omitempty"`
+	DispatchOutcome string `json:"dispatchOutcome,omitempty"`
+	Acknowledged    bool   `json:"acknowledged"`
+	ResponseError   bool   `json:"responseError"`
+	ExitCode        *int32 `json:"exitCode"`
+	SandboxDenied   bool   `json:"sandboxDenied"`
+	OutputComplete  bool   `json:"outputComplete"`
+	LastSequence    uint64 `json:"lastSequence"`
 }

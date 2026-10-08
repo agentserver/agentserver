@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,38 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
+
+func TestExecutionCredentialScopesAreBoundToEnvironment(t *testing.T) {
+	const sg = "aaaaaaaa-1111-4444-8888-111111111111"
+	const cn = "bbbbbbbb-1111-4444-8888-111111111111"
+	for _, test := range []struct {
+		env, scope string
+		allowed    bool
+	}{
+		{sg, "sg-managed-cli", true}, {cn, "cn-managed-cli", true},
+		{cn, "sg-managed-cli", false}, {sg, "cn-managed-cli", false},
+		{sg, "sg-managed-cli-sg", false}, {"cccccccc-1111-4444-8888-111111111111", "sg-managed-cli", false},
+	} {
+		t.Run(test.env+"/"+test.scope, func(t *testing.T) {
+			service, store, request := testBkectlExecutionCredentialService(t)
+			scopes, err := managedcredential.ParseScopeBindings(fmt.Sprintf(`[{"environmentId":%q,"scope":"sg-managed-cli"},{"environmentId":%q,"scope":"cn-managed-cli"}]`, sg, cn))
+			if err != nil {
+				t.Fatal(err)
+			}
+			service.processEnvironmentScopes = scopes
+			service.processEnvironmentTAEPSM = "sg-managed-cli"
+			request.Operation.EnvironmentID, request.TAEPSM = test.env, test.scope
+			result, err := service.ResolveExecutionCredential(t.Context(), request)
+			if test.allowed {
+				if err != nil || !result.Configured || result.TAEPSM != test.scope || store.useCalls != 1 || store.lastUse.TAEPSM != test.scope || store.lastUse.EnvironmentID != test.env {
+					t.Fatalf("scope not propagated to live authorization: %v", err)
+				}
+			} else if err == nil || store.useCalls != 0 || store.authorityCalls != 0 || result.Configured {
+				t.Fatal("cross-environment or unknown scope reached credentials")
+			}
+		})
+	}
+}
 
 func TestResolveExecutionCredentialMaterializesWorkspaceByteCloudAKSKForBkectl(t *testing.T) {
 	service, store, request := testBkectlExecutionCredentialService(t)

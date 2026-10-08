@@ -25,6 +25,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/egressgateway"
 	"github.com/agentserver/agentserver/v2/internal/enrollmenttoken"
 	"github.com/agentserver/agentserver/v2/internal/httperrorlog"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 	"github.com/agentserver/agentserver/v2/internal/publichttps"
@@ -219,6 +220,15 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		}
 	} else if strings.TrimSpace(getenv(managedScopeEnvironment)) != "" {
 		return errors.New("managed TAE PSM requires the managed executor")
+	}
+	var managedCredentialScopes *managedcredential.ScopeBindings
+	if managedExecutorEnabled && managedScopeEnvironment == "AGENTSERVER_V2_MANAGED_SANDBOX_SCOPE" {
+		managedCredentialScopes, err = managedcredential.ParseScopeBindings(getenv(managedcredential.ScopeBindingsEnvironment))
+		if err != nil {
+			return err
+		}
+	} else if getenv(managedcredential.ScopeBindingsEnvironment) != "" {
+		return errors.New("credential scope bindings require the Kubernetes provider")
 	}
 	var sandboxGatewayIdentities []string
 	if managedExecutorEnabled {
@@ -608,7 +618,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		}
 		egressCredentialService, serviceErr := coreserver.NewEgressCredentialService(coreserver.EgressCredentialServiceConfig{
 			Store: store, Registry: credentialRegistry, Sealer: credentialSealer, Placeholders: capabilityVerifier,
-			ProcessProofs: placeholderVerifier, ProcessEnvironmentTAEPSM: managedTAEPSM, Now: time.Now,
+			ProcessProofs: placeholderVerifier, ProcessEnvironmentTAEPSM: managedTAEPSM, ProcessEnvironmentScopes: managedCredentialScopes, Now: time.Now,
 			CredentialRefresher: credentialRefresher,
 		})
 		if serviceErr != nil {

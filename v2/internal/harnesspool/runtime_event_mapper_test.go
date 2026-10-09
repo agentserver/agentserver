@@ -318,6 +318,19 @@ func TestRuntimeEventMapperRequiresPinnedCatalogBoundToThread(t *testing.T) {
 }
 
 func TestRuntimeEventMapperRejectsScopeCatalogLifecycleAndArgumentDrift(t *testing.T) {
+	t.Run("sleep item is non-projecting", func(t *testing.T) {
+		mapper := newTestRuntimeEventMapper(t)
+		for _, method := range []string{"item/started", "item/completed"} {
+			mapped, err := mapper.Map(appRuntimeEvent(t, method, map[string]any{
+				"threadId": "thread-runtime-1", "turnId": "turn-runtime-1",
+				"item": map[string]any{"type": "sleep", "id": "sleep-1", "durationMs": 10},
+			}))
+			if err != nil || len(mapped) != 0 {
+				t.Fatalf("sleep %s mapped=%+v err=%v", method, mapped, err)
+			}
+		}
+	})
+
 	t.Run("scope", func(t *testing.T) {
 		mapper := newTestRuntimeEventMapper(t)
 		_, err := mapper.Map(appRuntimeEvent(t, "item/started", map[string]any{

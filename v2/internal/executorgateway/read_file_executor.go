@@ -250,7 +250,11 @@ func (executor *ReadFileExecutor) executeManaged(
 			Version: "read-file-terminal-evidence-v1", Kind: ReadFileV1OperationRead,
 			Status: "unknown", FailureClass: "dispatch_unknown",
 		}, dispatchErr)
-		executor.fenceManagedReadUnknown(executionCtx, request.Principal, plan.Environment.Target, "read_file_dispatch_unknown")
+		// A definite rejection (e.g. busy or a denied path) is not evidence of
+		// a lost execution. Only ambiguous dispatch requires fencing the target.
+		if executionbackend.OutcomeOf(dispatchErr) == executionbackend.OutcomeUnknown {
+			executor.fenceManagedReadUnknown(executionCtx, request.Principal, plan.Environment.Target, "read_file_dispatch_unknown")
+		}
 		return result, closeErr
 	}
 	acknowledgement, err := exchange.AwaitAcknowledgement(executionCtx)

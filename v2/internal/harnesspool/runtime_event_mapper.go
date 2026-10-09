@@ -203,6 +203,11 @@ func (mapper *runtimeEventMapper) mapItemStarted(raw json.RawMessage) ([]mappedR
 		return append(started, arguments...), nil
 	case "userMessage":
 		return nil, nil
+	case "sleep":
+		// Codex may emit an internal pacing item while waiting for a dynamic
+		// tool result. It carries no user-visible content and must not make the
+		// strict dynamic-tool projection fail the whole turn.
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("app-server item type %q is outside the dynamic-only runtime profile", itemType.Type)
 	}
@@ -316,6 +321,8 @@ func (mapper *runtimeEventMapper) mapItemCompleted(raw json.RawMessage) ([]mappe
 		delete(mapper.toolCalls, item.ID)
 		return append(finished, result...), nil
 	case "userMessage":
+		return nil, nil
+	case "sleep":
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("app-server item type %q is outside the dynamic-only runtime profile", itemType.Type)

@@ -544,34 +544,39 @@ func (s *Server) signal(w http.ResponseWriter, r *http.Request, req sandboxcontr
 }
 
 func (s *Server) read(w http.ResponseWriter, r *http.Request, req sandboxcontract.ReadFileRequest) {
+	// accept() has already journaled this exact read operation. File-level
+	// errors are terminal operation results, not ambiguous transport failures.
+	stream := newStream(w, req.Identity, req.Ref)
+	if stream.ack("") != nil {
+		return
+	}
+	fail := func(code string) {
+		stream.terminal(executionbackend.TerminalResult{Status: executionbackend.TerminalFailed, ReasonCode: code, OutputComplete: true})
+	}
 	rel, err := filepath.Rel(s.config.Workspace, req.Path)
 	if err != nil || !filepath.IsLocal(rel) || rel == "." || req.Offset > 1<<63-1 {
-		reject(w, "path_outside_workspace", 400)
+		fail("path_outside_workspace")
 		return
 	}
 	root, err := os.OpenRoot(s.workspaceSource())
 	if err != nil {
-		reject(w, "workspace_unavailable", 503)
+		fail("workspace_unavailable")
 		return
 	}
 	defer root.Close()
 	file, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		reject(w, "file_unavailable", 404)
+		fail("file_unavailable")
 		return
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		reject(w, "not_regular_file", 400)
+		fail("not_regular_file")
 		return
 	}
 	if _, err = file.Seek(int64(req.Offset), io.SeekStart); err != nil {
-		reject(w, "read_failed", 400)
-		return
-	}
-	stream := newStream(w, req.Identity, req.Ref)
-	if stream.ack("") != nil {
+		fail("read_failed")
 		return
 	}
 	reader := io.LimitReader(file, int64(req.Limit))

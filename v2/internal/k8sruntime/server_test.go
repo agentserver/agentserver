@@ -222,8 +222,9 @@ func TestRuntimeFileReadRejectsSymlinkEscape(t *testing.T) {
 	read.Identity.OperationID = "read-2"
 	read.Identity.MutationKey = "mutation-2"
 	read.Path = filepath.Join(s.config.Workspace, "outside")
-	if w := call(t, s, http.MethodPost, path, read, true); w.Code != 404 {
-		t.Fatal("symlink escaped workspace")
+	readFrames := frames(t, call(t, s, http.MethodPost, path, read, true))
+	if len(readFrames) != 2 || readFrames[1].Terminal == nil || readFrames[1].Terminal.Status != executionbackend.TerminalFailed || readFrames[1].Terminal.ReasonCode != "file_unavailable" {
+		t.Fatalf("symlink read should be a terminal file failure: %+v", readFrames)
 	}
 }
 

@@ -17,6 +17,11 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 )
 
+const (
+	maxRuntimeBusyRetries = 3
+	runtimeBusyRetryDelay = 40 * time.Millisecond
+)
+
 type HTTPRuntimeClient struct{ client *http.Client }
 
 func (c *HTTPRuntimeClient) PrepareRepository(ctx context.Context, e Endpoint, r k8sruntime.PrepareRepositoryRequest) (k8sruntime.RepositoryState, error) {
@@ -139,17 +144,33 @@ func runtimeRef(t executionbackend.Target) sandboxcontract.SandboxRef {
 }
 
 func (c *HTTPRuntimeClient) exchange(ctx context.Context, e Endpoint, path string, t executionbackend.Target, o executionbackend.OperationContext, payload any) (executionbackend.Exchange, error) {
-	resp, err := c.request(ctx, e, http.MethodPost, path, payload)
+	var resp *http.Response
+	var err error
+	for attempt := 0; ; attempt++ {
+		resp, err = c.request(ctx, e, http.MethodPost, path, payload)
+		if err != nil || resp.StatusCode == http.StatusOK {
+			break
+		}
+		document := readRuntimeError(resp)
+		if resp.StatusCode != http.StatusConflict || !document.IsBusy() || attempt >= maxRuntimeBusyRetries {
+			return nil, runtimeDispatchErrorFromDocument(resp.StatusCode, document)
+		}
+		// repository_busy is emitted before accept() consumes the operation.
+		// Retry only this proven pre-admission rejection, with identical IDs.
+		// Transport failures, duplicate operations and boot changes are never replayed.
+		timer := time.NewTimer(runtimeBusyRetryDelay * time.Duration(attempt+1))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, runtimeDispatchErrorFromDocument(resp.StatusCode, document)
+		case <-timer.C:
+		}
+	}
 	if err != nil {
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, "runtime_transport", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		outcome := executionbackend.OutcomeUnknown
-		if resp.StatusCode == 400 || resp.StatusCode == 403 || resp.StatusCode == 404 || resp.StatusCode == 422 {
-			outcome = executionbackend.OutcomeRejected
-		}
-		return nil, executionbackend.NewDispatchError(outcome, "runtime_rejected", errors.New("runtime rejected execution request"))
+		return nil, runtimeDispatchErrorFromDocument(resp.StatusCode, readRuntimeError(resp))
 	}
 	media, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || media != "application/x-ndjson" {
@@ -157,6 +178,73 @@ func (c *HTTPRuntimeClient) exchange(ctx context.Context, e Endpoint, path strin
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, "invalid_runtime_stream", errors.New("invalid runtime stream content type"))
 	}
 	return executorgateway.NewSandboxOperationExchange(t, o, resp.Body)
+}
+
+type runtimeErrorDocument struct {
+	document sandboxcontract.ErrorResponse
+	valid    bool
+}
+
+func (e runtimeErrorDocument) IsBusy() bool {
+	return e.valid && e.document.Code == "repository_busy" && e.document.Outcome == string(executionbackend.OutcomeRejected)
+}
+
+func readRuntimeError(resp *http.Response) runtimeErrorDocument {
+	if resp == nil || resp.Body == nil {
+		return runtimeErrorDocument{}
+	}
+	defer resp.Body.Close()
+	var document sandboxcontract.ErrorResponse
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024+1))
+	if err != nil || len(raw) > 16*1024 {
+		return runtimeErrorDocument{}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&document) != nil || document.Code == "" {
+		return runtimeErrorDocument{}
+	}
+	var extra any
+	return runtimeErrorDocument{document: document, valid: decoder.Decode(&extra) == io.EOF}
+}
+
+func runtimeDispatchErrorFromDocument(status int, runtime runtimeErrorDocument) error {
+	document := runtime.document
+	outcome := executionbackend.OutcomeUnknown
+	code, providerCode := "runtime_rejected", ""
+	// Only known runtime codes may enter logs. Never retain provider messages,
+	// arbitrary request IDs or untrusted text in dispatch diagnostics.
+	if runtime.valid && document.Outcome == string(executionbackend.OutcomeRejected) && runtimeErrorStatus(document.Code) == status {
+		code, providerCode = "runtime_"+document.Code, document.Code
+		if document.Code != "duplicate_or_fenced" && document.Code != "runtime_replaced" && document.Code != "binding_conflict" {
+			outcome = executionbackend.OutcomeRejected
+		}
+	}
+	dispatch := executionbackend.NewDispatchError(outcome, code, errors.New("runtime rejected execution request"))
+	dispatch.ProviderCode = providerCode
+	dispatch.HTTPStatus = status
+	written := true
+	dispatch.RequestWritten = &written
+	return dispatch
+}
+
+func runtimeErrorStatus(code string) int {
+	switch code {
+	case "repository_busy", "duplicate_or_fenced", "runtime_replaced", "binding_conflict":
+		return http.StatusConflict
+	case "invalid_json", "invalid_command", "invalid_signal", "invalid_read", "path_outside_workspace", "not_regular_file", "read_failed":
+		return http.StatusBadRequest
+	case "forbidden":
+		return http.StatusForbidden
+	case "file_unavailable", "process_not_found", "not_found":
+		return http.StatusNotFound
+	case "process_start_failed", "interrupt_unsupported":
+		return http.StatusUnprocessableEntity
+	case "not_ready", "workspace_unavailable":
+		return http.StatusServiceUnavailable
+	default:
+		return 0
+	}
 }
 
 func (c *HTTPRuntimeClient) StartProcess(ctx context.Context, e Endpoint, r executionbackend.StartProcessRequest) (executionbackend.Exchange, error) {

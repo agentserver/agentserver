@@ -296,7 +296,7 @@ func (resolver *EnvironmentResolver) listRegistered(ctx context.Context, scope E
 // Retries are deliberately bounded and never fall back to another backend.
 func (resolver *EnvironmentResolver) listRegisteredStable(ctx context.Context, scope EnvironmentRegistryScope) ([]RegisteredEnvironment, error) {
 	registered, err := resolver.listRegistered(ctx, scope)
-	if err != nil || len(registered) != 0 || scope.SessionID == "" || scope.Workspace == nil || scope.Workspace.RepositoryID == "" {
+	if err != nil || len(registered) != 0 || scope.SessionID == "" {
 		return registered, err
 	}
 	for attempt := 0; attempt < 3; attempt++ {

@@ -663,12 +663,14 @@ func (control *fakeOneShotWorkerControl) approvalSnapshot() ElicitationRequest {
 }
 
 type fakeOneShotWorkerMCP struct {
-	catalog   *Catalog
-	order     *workerOrder
-	closeOnce sync.Once
+	projectContext string
+	catalog        *Catalog
+	order          *workerOrder
+	closeOnce      sync.Once
 }
 
-func (mcp *fakeOneShotWorkerMCP) Catalog() *Catalog { return mcp.catalog }
+func (mcp *fakeOneShotWorkerMCP) Catalog() *Catalog      { return mcp.catalog }
+func (mcp *fakeOneShotWorkerMCP) ProjectContext() string { return mcp.projectContext }
 
 func (*fakeOneShotWorkerMCP) CallDynamicTool(context.Context, DynamicCall) (DynamicToolResult, error) {
 	return DynamicToolResult{}, errors.New("unexpected fake MCP call")

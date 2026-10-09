@@ -22,6 +22,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/repositorycheckout"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcapability"
 	"github.com/agentserver/agentserver/v2/internal/sandboxclient"
+	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 )
 
 type managedSandboxGatewayProfilesDocument struct {
@@ -187,6 +188,9 @@ func configureProfiledTAEExecution(
 			closeClients()
 			return nil, nil, nil, nil, nil, clientErr
 		}
+		if kind == executionbackend.KindKubernetes {
+			profile.provisioning.RepositoryPreparer = lifecycle
+		}
 		acquirer, clientErr := executorgateway.NewDefaultGatewayManagedSandboxSessionAcquirer(
 			lifecycle, profile.provisioning, slog.Default(),
 		)
@@ -195,8 +199,8 @@ func configureProfiledTAEExecution(
 			return nil, nil, nil, nil, nil, clientErr
 		}
 		if credentialClient, ok := coreAuthorities.(executorgateway.RepositoryCredentialClient); ok {
-			acquirer.SetRepositoryCredentialResolver(func(ctx context.Context, principal executorgateway.ExecutorMCPPrincipal, bindingID string) (*repositorycheckout.Credential, error) {
-				response, err := credentialClient.ResolveRepositoryCredential(ctx, corecontract.ResolveRepositoryCredentialRequest{Operation: corecontract.EgressCredentialOperation{WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID, ActorID: principal.ActorID, EnvironmentID: principal.Workspace.EnvironmentID, RunID: principal.Run.RunID, RunAttemptID: principal.Run.RunAttemptID, RunAttemptGeneration: principal.Run.RunAttemptGeneration}, BindingID: bindingID, EnvironmentID: principal.Workspace.EnvironmentID, RunID: principal.Run.RunID, RunAttemptID: principal.Run.RunAttemptID})
+			acquirer.SetRepositoryCredentialResolver(func(ctx context.Context, principal executorgateway.ExecutorMCPPrincipal, ref sandboxcontract.SandboxRef, bindingID string) (*repositorycheckout.Credential, error) {
+				response, err := credentialClient.ResolveRepositoryCredential(ctx, corecontract.ResolveRepositoryCredentialRequest{Operation: corecontract.EgressCredentialOperation{WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID, ActorID: principal.ActorID, EnvironmentID: principal.Workspace.EnvironmentID, RunID: principal.Run.RunID, RunAttemptID: principal.Run.RunAttemptID, RunAttemptGeneration: principal.Run.RunAttemptGeneration, SandboxID: ref.SandboxID, TargetGeneration: ref.TargetGeneration}, BindingID: bindingID, EnvironmentID: principal.Workspace.EnvironmentID, RunID: principal.Run.RunID, RunAttemptID: principal.Run.RunAttemptID, HolderID: principal.Run.HolderID})
 				if err != nil {
 					return nil, err
 				}

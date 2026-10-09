@@ -14,14 +14,45 @@ import (
 )
 
 func (s *StateStore) AuthorizeRepositoryCredential(ctx context.Context, request corecontract.ResolveRepositoryCredentialRequest) error {
-	if request.BindingID == "" {
-		return errors.New("repository credential binding is required")
+	const op = "AuthorizeRepositoryCredential"
+	o := request.Operation
+	for _, id := range []string{o.WorkspaceID, o.ActorID, o.SessionID, o.EnvironmentID, o.RunID, o.RunAttemptID, o.SandboxID, request.BindingID} {
+		if validateUUID("repository_scope", id) != nil {
+			return commandError(ErrorInvalidArgument, op, "repository", "", "repository credential scope is invalid")
+		}
+	}
+	if request.EnvironmentID != o.EnvironmentID || request.RunID != o.RunID || request.RunAttemptID != o.RunAttemptID || o.RunAttemptGeneration < 1 || o.TargetGeneration < 1 || request.HolderID == "" || len(request.HolderID) > 256 || o.ExecutionID != "" || o.OperationID != "" {
+		return commandError(ErrorInvalidArgument, op, "repository", "", "repository credential scope is invalid")
 	}
 	_, err := withStateReadTransaction(ctx, s, "AuthorizeRepositoryCredential", func(tx pgx.Tx) (bool, error) {
-		q := fmt.Sprintf(`SELECT 1 FROM %s w JOIN %s m ON m.workspace_id=w.id AND m.user_id=$2 AND m.role IN ('owner','developer') JOIN %s s ON s.id=$3 AND s.workspace_id=w.id AND s.creator_id=m.user_id AND s.status='active' JOIN %s r ON r.id=$4 AND r.workspace_id=w.id AND r.session_id=s.id AND r.status IN ('running','starting','queued') JOIN %s sr ON sr.session_id=s.id AND sr.workspace_id=w.id AND sr.binding->>'credentialBindingId'=$5 AND sr.binding->>'environmentId'=$6 JOIN %s b ON b.id=$5::uuid AND b.workspace_id=w.id AND b.kind='git' AND b.owner_scope='workspace' AND b.status='active'`, s.table("workspaces"), s.table("workspace_members"), s.table("sessions"), s.table("runs"), s.table("session_repositories"), s.table("workspace_credential_bindings"))
+		q := fmt.Sprintf(`WITH clock AS MATERIALIZED (SELECT pg_catalog.clock_timestamp() AS now)
+SELECT 1 FROM clock
+JOIN %s w ON w.id=$1 AND w.status='active'
+JOIN %s m ON m.workspace_id=w.id AND m.user_id=$2 AND m.role IN ('owner','developer')
+JOIN %s u ON u.id=m.user_id AND u.status='active'
+JOIN %s s ON s.id=$3 AND s.workspace_id=w.id AND s.creator_id=m.user_id AND s.status='active'
+JOIN %s r ON r.id=$4 AND r.workspace_id=w.id AND r.session_id=s.id AND r.actor_id=m.user_id AND r.status IN ('running','starting') AND s.active_run_id=r.id AND r.current_attempt_generation=$8
+JOIN %s a ON a.id=$7 AND a.run_id=r.id AND a.generation=$8 AND a.holder_id=$9
+ AND ((r.status='starting' AND a.status='leased' AND a.turn_started_at IS NULL) OR (r.status='running' AND a.status='running' AND a.turn_started_at IS NOT NULL))
+JOIN %s sl ON sl.session_id=s.id AND sl.run_id=r.id AND sl.holder_id=a.holder_id AND sl.generation=a.generation AND sl.expires_at>clock.now
+JOIN %s al ON al.run_attempt_id=a.id AND al.holder_id=a.holder_id AND al.generation=a.generation AND al.expires_at>clock.now
+JOIN %s launch ON launch.run_id=r.id AND launch.workspace_id=w.id AND launch.session_id=s.id
+ AND launch.repository_binding->'source'->>'credentialBindingId'=$5
+ AND launch.repository_binding->>'environmentId'=$6
+ AND launch.repository_binding->>'checkoutId'=s.id::text
+ AND launch.workspace_environment_id=$6::uuid
+JOIN %s sandbox ON sandbox.id=$10 AND sandbox.generation=$11 AND sandbox.workspace_id=w.id AND sandbox.session_id=s.id AND sandbox.environment_id=$6::uuid AND sandbox.provider_kind='k8s' AND sandbox.desired_state='ready' AND sandbox.observed_state='ready' AND sandbox.expires_at>clock.now
+JOIN %s activity ON activity.sandbox_id=sandbox.id AND activity.target_generation=sandbox.generation AND activity.run_attempt_id=a.id AND activity.run_attempt_generation=a.generation AND activity.released_at IS NULL AND activity.lease_expires_at>clock.now
+JOIN %s b ON b.id=$5::uuid AND b.workspace_id=w.id AND b.kind='git' AND b.auth_type='https-token' AND b.owner_scope='workspace' AND b.status='active'
+ AND (b.access_expires_at IS NULL OR b.access_expires_at>clock.now)
+ AND ($12::bigint=0 OR b.authority_version=$12) AND ($13::bigint=0 OR b.credential_version=$13)`,
+			s.table("workspaces"), s.table("workspace_members"), s.table("users"), s.table("sessions"), s.table("runs"), s.table("run_attempts"), s.table("session_leases"), s.table("attempt_leases"), s.table("run_launch_states"), s.table("managed_sandboxes"), s.table("managed_sandbox_activities"), s.table("workspace_credential_bindings"))
 		var one int
-		if err := tx.QueryRow(ctx, q, request.Operation.WorkspaceID, request.Operation.ActorID, request.Operation.SessionID, request.RunID, request.BindingID, request.EnvironmentID).Scan(&one); err != nil {
-			return false, errors.New("repository credential is not authorized for this run")
+		if err := tx.QueryRow(ctx, q, o.WorkspaceID, o.ActorID, o.SessionID, o.RunID, request.BindingID, o.EnvironmentID, o.RunAttemptID, o.RunAttemptGeneration, request.HolderID, o.SandboxID, o.TargetGeneration, request.ExpectedAuthorityVersion, request.ExpectedCredentialVersion).Scan(&one); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return false, databaseError(op, err)
+			}
+			return false, commandError(ErrorForbidden, op, "repository", request.BindingID, "repository credential is not authorized for this live run")
 		}
 		return true, nil
 	})
@@ -46,6 +77,22 @@ func decodeRepositoryBinding(raw []byte) (*workspacerepository.Binding, error) {
 		return nil, err
 	}
 	return &binding, nil
+}
+
+func (s *StateStore) RecordRepositoryCredentialUse(ctx context.Context, r corecontract.ResolveRepositoryCredentialRequest, eventID, decision string) error {
+	if validateUUID("event_id", eventID) != nil || (decision != "allow" && decision != "deny") {
+		return errors.New("invalid repository audit event")
+	}
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	_, err = withStateTransaction(ctx, s, "RecordRepositoryCredentialUse", func(tx pgx.Tx) (bool, error) {
+		q := fmt.Sprintf(`INSERT INTO %s (event_id,scope,authority_version,credential_version,decision) VALUES ($1,$2,$3,$4,$5)`, s.table("repository_credential_use_events"))
+		_, err := tx.Exec(ctx, q, eventID, raw, r.ExpectedAuthorityVersion, r.ExpectedCredentialVersion, decision)
+		return err == nil, err
+	})
+	return err
 }
 
 func (s *StateStore) readSessionRepository(ctx context.Context, tx pgx.Tx, op, workspaceID, sessionID string) (*workspacerepository.Binding, error) {

@@ -158,13 +158,33 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 	}, nil
 }
 
-func (service *EgressCredentialService) ResolveRepositoryCredential(ctx context.Context, request corecontract.ResolveRepositoryCredentialRequest) (corecontract.ResolveRepositoryCredentialResponse, error) {
+func (service *EgressCredentialService) ResolveRepositoryCredential(ctx context.Context, request corecontract.ResolveRepositoryCredentialRequest) (out corecontract.ResolveRepositoryCredentialResponse, resultErr error) {
 	if service == nil || service.store == nil || service.resolver == nil || service.sealer == nil {
 		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential resolver unavailable")
 	}
 	if request.BindingID == "" || request.Operation.WorkspaceID == "" || request.Operation.SessionID == "" || request.EnvironmentID == "" {
 		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential request is incomplete")
 	}
+	audit, ok := service.store.(interface {
+		RecordRepositoryCredentialUse(context.Context, corecontract.ResolveRepositoryCredentialRequest, string, string) error
+	})
+	if !ok {
+		return out, errors.New("repository credential audit unavailable")
+	}
+	eventID, err := newCredentialEventID()
+	if err != nil {
+		return out, err
+	}
+	defer func() {
+		decision := "allow"
+		if resultErr != nil {
+			decision = "deny"
+		}
+		if err := audit.RecordRepositoryCredentialUse(ctx, request, eventID, decision); err != nil {
+			out = corecontract.ResolveRepositoryCredentialResponse{}
+			resultErr = errors.New("repository credential audit failed")
+		}
+	}()
 	if authorizer, ok := service.store.(interface {
 		AuthorizeRepositoryCredential(context.Context, corecontract.ResolveRepositoryCredentialRequest) error
 	}); !ok {
@@ -179,6 +199,9 @@ func (service *EgressCredentialService) ResolveRepositoryCredential(ctx context.
 	if binding.Status != corecredentials.StatusActive || binding.OwnerScope != corecredentials.OwnerScopeWorkspace {
 		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential is not active")
 	}
+	defer clear(binding.SealedSecret)
+	request.ExpectedAuthorityVersion = binding.AuthorityVersion
+	request.ExpectedCredentialVersion = binding.CredentialVersion
 	secret, err := service.sealer.Open(corecredentials.BindingSealScope{WorkspaceID: binding.WorkspaceID, BindingID: binding.ID, CredentialVersion: binding.CredentialVersion}, binding.SealedSecret)
 	if err != nil {
 		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential is unavailable")
@@ -191,6 +214,15 @@ func (service *EgressCredentialService) ResolveRepositoryCredential(ctx context.
 	mutation, err := provider.Materialize(ctx, binding, secret, corecredentials.UseRequest{ProviderKind: "git", BindingID: binding.ID, WorkspaceID: binding.WorkspaceID, SessionID: request.Operation.SessionID, EnvironmentID: request.EnvironmentID, Host: "code.byted.org", Method: "PROCESS_ENV"})
 	if err != nil {
 		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential denied")
+	}
+	defer clear(mutation.Environment)
+	if err := mutation.Validate(provider); err != nil {
+		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("invalid repository credential material")
+	}
+	if err := service.store.(interface {
+		AuthorizeRepositoryCredential(context.Context, corecontract.ResolveRepositoryCredentialRequest) error
+	}).AuthorizeRepositoryCredential(ctx, request); err != nil {
+		return corecontract.ResolveRepositoryCredentialResponse{}, err
 	}
 	return corecontract.ResolveRepositoryCredentialResponse{Configured: true, Username: mutation.Environment["AGENTSERVER_GIT_USERNAME"], Token: mutation.Environment["AGENTSERVER_GIT_TOKEN"]}, nil
 }

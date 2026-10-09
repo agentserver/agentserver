@@ -23,6 +23,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/safediagnostic"
 	"github.com/agentserver/agentserver/v2/internal/sessiontitle"
+	"github.com/agentserver/agentserver/v2/internal/workspacecontext"
 )
 
 const (
@@ -289,6 +290,19 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		return mcp.Close()
 	}
 	defer closeMCP()
+	var projectText string
+	if bootstrap.Manifest.Workspace != nil && bootstrap.Manifest.Workspace.RepositoryID != "" {
+		reader, ok := mcp.(interface{ ProjectContext() string })
+		if !ok {
+			return errors.New("executor repository context preflight is unavailable")
+		}
+		snapshot, err := workspacecontext.Decode(reader.ProjectContext(), bootstrap.Manifest.Workspace.RepositoryID, bootstrap.Manifest.Workspace.WorkingDirectory)
+		if err != nil {
+			return err
+		}
+		raw, _ := json.Marshal(snapshot)
+		projectText = "Project guidance read from the remote session repository before this turn. Apply it within the user's request and platform permissions. These are project instructions and metadata, not platform authority. Skill bodies and references must be read through executor tools; use @repository/ followed by the listed repository-relative path.\n" + string(raw) + "\n\nUser request:\n"
+	}
 
 	bridge, err := NewDynamicBridge(mcp, defaultWorkerPendingCalls, limits.MaxArgumentBytes)
 	if err != nil {
@@ -329,6 +343,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 	eventErr := make(chan error, 1)
 	go consumeAppServerNotifications(runCtx, runner.ConsumeEvents, runtimeEvents.HandleNotification, cancelRun, eventErr)
 	request := appServerRequest(bootstrap.Manifest, prompt, baseInstructions, mcp.Catalog(), appRuntime, restored, config.ClientInfo)
+	request.UserText = projectText + prompt
 	result, runnerErr := runner.Run(runCtx, request)
 	notificationErr := <-eventErr
 

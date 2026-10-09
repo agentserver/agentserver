@@ -54,7 +54,7 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		handler.ensure(response, request)
 		return
 	}
-	if request.URL.Path == sandboxcontract.PrepareRepositoryPath {
+	if strings.HasPrefix(request.URL.Path, sandboxcontract.SandboxPathPrefix) && strings.HasSuffix(request.URL.Path, "/repository:prepare") {
 		if request.Method != http.MethodPost {
 			handler.notFound(response)
 			return
@@ -96,6 +96,11 @@ func (handler *Handler) prepareRepository(response http.ResponseWriter, request 
 	}
 	var command sandboxcontract.PrepareRepositoryRequest
 	if !handler.decode(response, request, &command) {
+		return
+	}
+	preparePath, err := sandboxcontract.PrepareRepositoryPath(command.Ref.SandboxID)
+	if err != nil || preparePath != request.URL.Path {
+		handler.notFound(response)
 		return
 	}
 	result, err := handler.service.PrepareRepository(request.Context(), principal, command)

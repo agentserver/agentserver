@@ -498,6 +498,9 @@ func (s *StateStore) resolveSessionWorkspaceBinding(
 		return nil, databaseError(operation+" validate session environment version", errors.New("registered environment version is invalid"))
 	}
 	rootSHA256, err := workspaceauthority.RootDescriptorSHA256(environment.RootDescriptor)
+	if repository != nil {
+		rootSHA256, err = workspaceauthority.RepositoryRootDescriptorSHA256(environment.RootDescriptor)
+	}
 	if err != nil {
 		return nil, databaseError(operation+" validate session root descriptor", err)
 	}
@@ -520,7 +523,7 @@ func workspaceBindingsEqual(left, right *workspaceauthority.Binding) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}
-	return *left == *right
+	return workspaceauthority.Equal(left, right)
 }
 
 func validateRunManagedSandboxBinding(binding RunManagedSandboxBinding) error {

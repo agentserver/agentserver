@@ -188,6 +188,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialRequest", reflect.TypeFor[ResolveEgressCredentialRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialResponse", reflect.TypeFor[ResolveEgressCredentialResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ResolveExecutionCredentialRequest", reflect.TypeFor[ResolveExecutionCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveRepositoryCredentialRequest", reflect.TypeFor[ResolveRepositoryCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveRepositoryCredentialResponse", reflect.TypeFor[ResolveRepositoryCredentialResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ResolveExecutionCredentialResponse", reflect.TypeFor[ResolveExecutionCredentialResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "AuthorizeProcessEnvironmentEgressRequest", reflect.TypeFor[AuthorizeProcessEnvironmentEgressRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "RecordEgressCredentialAuditRequest", reflect.TypeFor[RecordEgressCredentialAuditRequest]())

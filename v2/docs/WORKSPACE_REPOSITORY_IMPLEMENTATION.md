@@ -2,6 +2,28 @@
 
 Status: in progress. This document is a working implementation plan, not a claim of deployed support.
 
+## Publication audit (2026-10-09)
+
+The original `818ae24e` artifacts were built but not deployed: the publication
+audit found missing source projections, pointer-address authority comparisons,
+an unregistered preparation capability action, a missing production preparer,
+and a worker that ignored MCP project instructions. Passing the old unit suite
+was not proof of an operational repository session.
+
+The follow-up corrects those seams and adds tests for project context reaching
+the model before any tool, rejection of missing context, stable authority
+across JSON decoding, repository-root reads for ancestor skills, and live
+PostgreSQL checks for the exact frozen repository/attempt/sandbox/lease before
+Git credential materialization. Both allow/deny credential decisions have a
+dedicated audit table without fake tool-call/execution IDs. Root descriptor
+comparison for the new repository profile survives JSONB/HTTP whitespace.
+
+A temporary SG Pod using the deployed non-root seccomp/AppArmor/bubblewrap
+profile passed real Linux read-only/write enforcement, secret-descriptor and
+runtime-file isolation, background-process cleanup, managed CLI smoke tests,
+and repository file projection tests. It contained only synthetic test data and
+was deleted after the checks. Production services have not yet been upgraded.
+
 ## Requested behavior
 
 - A workspace can configure a Git repository, for example `https://code.byted.org/tce/rtm-aihub`, a ref and a relative working directory.

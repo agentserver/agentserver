@@ -238,13 +238,16 @@ func (resolver *EnvironmentResolver) resolve(ctx context.Context, scope Environm
 }
 
 func validateWorkspaceEnvironment(binding workspaceauthority.Binding, environment ResolvedEnvironment) error {
-	if environment.Target.Kind != executionbackend.KindAgentX {
+	if !(environment.Target.Kind == executionbackend.KindAgentX && binding.RepositoryID == "") && !(environment.Target.Kind == executionbackend.KindKubernetes && binding.RepositoryID != "" && binding.Repository != nil) {
 		return errors.New("frozen workspace authority requires an AgentX environment with enforced filesystem isolation")
 	}
 	if environment.EnvironmentID != binding.EnvironmentID || environment.EnvironmentVersion != binding.EnvironmentVersion {
 		return errors.New("registered environment generation differs from frozen workspace authority")
 	}
 	digest, err := workspaceauthority.RootDescriptorSHA256(environment.RootDescriptor)
+	if binding.RepositoryID != "" {
+		digest, err = workspaceauthority.RepositoryRootDescriptorSHA256(environment.RootDescriptor)
+	}
 	if err != nil {
 		return fmt.Errorf("fingerprint registered environment root: %w", err)
 	}

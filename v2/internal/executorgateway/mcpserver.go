@@ -15,6 +15,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
+	"github.com/agentserver/agentserver/v2/internal/workspacecontext"
 	"github.com/agentserver/agentserver/v2/internal/workspacerepository"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -213,8 +214,14 @@ func repositoryMCPInstructions(session *executorMCPSession) string {
 	if ctx == nil {
 		return ""
 	}
-	data, _ := json.Marshal(ctx)
-	return "The frozen session repository has been prepared. Before model work, use executor.read_file or executor.shell in the repository working directory. The following bounded project-context index is authoritative project data (skill bodies remain on the executor and must be read on demand): " + string(data)
+	if session.principal.Workspace == nil {
+		return ""
+	}
+	encoded, err := workspacecontext.Encode(session.principal.Workspace.RepositoryID, *ctx)
+	if err != nil {
+		return ""
+	}
+	return encoded
 }
 
 func (handler *ExecutorMCPHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -269,14 +276,18 @@ func (handler *ExecutorMCPHandler) ServeHTTP(response http.ResponseWriter, reque
 				http.Error(response, "executor MCP session is unavailable", status)
 				return
 			}
-			if principal.Repository != nil && handler.config.ManagedSandboxAcquirer != nil {
+			defer handler.finishPreparedSession(session)
+			if principal.Workspace != nil && principal.Workspace.RepositoryID != "" {
+				if principal.Repository == nil || handler.config.ManagedSandboxAcquirer == nil {
+					http.Error(response, "repository preparation unavailable", http.StatusServiceUnavailable)
+					return
+				}
 				if _, err := session.acquireManagedSandbox(request.Context(), handler.config.ManagedSandboxAcquirer); err != nil {
 					http.Error(response, "repository preparation is temporarily unavailable", http.StatusServiceUnavailable)
 					return
 				}
 				session.server = handler.newScopedServer(session)
 			}
-			defer handler.finishPreparedSession(session)
 		}
 	} else {
 		session, err = handler.authorizeSession(sessionID, principal)
@@ -847,11 +858,18 @@ func equalExecutorMCPPrincipals(left, right ExecutorMCPPrincipal) bool {
 	if (left.Workspace == nil) != (right.Workspace == nil) {
 		return false
 	}
-	if left.Workspace != nil && *left.Workspace != *right.Workspace {
+	if !workspaceauthority.Equal(left.Workspace, right.Workspace) {
 		return false
 	}
 	left.Workspace = nil
 	right.Workspace = nil
+	if (left.Repository == nil) != (right.Repository == nil) {
+		return false
+	}
+	if left.Repository != nil && *left.Repository != *right.Repository {
+		return false
+	}
+	left.Repository, right.Repository = nil, nil
 	return left == right
 }
 

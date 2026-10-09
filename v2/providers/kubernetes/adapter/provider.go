@@ -230,16 +230,9 @@ func (p *Provider) PrepareRepository(ctx context.Context, request sandboxgateway
 	if !ok {
 		return sandboxcontract.PrepareRepositoryResponse{}, errors.New("runtime repository preparation is unavailable")
 	}
-	claim, err := p.load(ctx, request.SessionRef)
+	endpoint, err := p.dispatchEndpoint(ctx, request.SessionRef, request.Request.Ref.Target(request.Request.Session.EnvironmentID), executionbackend.OperationContext{WorkspaceID: request.Request.Session.WorkspaceID, SessionID: request.Request.Session.SessionID})
 	if err != nil {
 		return sandboxcontract.PrepareRepositoryResponse{}, err
-	}
-	endpoint, ready, err := p.endpoint(ctx, claim)
-	if err != nil || !ready {
-		if err != nil {
-			return sandboxcontract.PrepareRepositoryResponse{}, err
-		}
-		return sandboxcontract.PrepareRepositoryResponse{}, errors.New("sandbox runtime is not ready")
 	}
 	input := k8sruntime.PrepareRepositoryRequest{Session: request.Request.Session, Ref: request.Request.Ref, CheckoutID: request.Request.CheckoutID, Source: workspacerepository.Source{URL: request.Request.Source.URL, Ref: request.Request.Source.Ref, WorkingDirectory: request.Request.Source.WorkingDirectory, CredentialBindingID: request.Request.Source.CredentialBindingID}}
 	if request.Request.Credential != nil {
@@ -249,21 +242,7 @@ func (p *Provider) PrepareRepository(ctx context.Context, request sandboxgateway
 	if err != nil {
 		return sandboxcontract.PrepareRepositoryResponse{}, err
 	}
-	repoCtx := sandboxcontract.RepositoryContext{Version: state.Context.Version, WorkingDirectory: state.Context.WorkingDirectory}
-	for _, item := range state.Context.Instructions {
-		repoCtx.Instructions = append(repoCtx.Instructions, struct {
-			Path string `json:"path"`
-			Text string `json:"text"`
-		}{Path: item.Path, Text: item.Text})
-	}
-	for _, item := range state.Context.Skills {
-		repoCtx.Skills = append(repoCtx.Skills, struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-			Path        string `json:"path"`
-		}{Name: item.Name, Description: item.Description, Path: item.Path})
-	}
-	return sandboxcontract.PrepareRepositoryResponse{CheckoutID: state.CheckoutID, Commit: state.Commit, Created: state.Created, Context: repoCtx}, nil
+	return sandboxcontract.PrepareRepositoryResponse{CheckoutID: state.CheckoutID, Commit: state.Commit, Created: state.Created, Context: state.Context}, nil
 }
 
 func (p *Provider) matchIdentity(claim *unstructured.Unstructured, expected createIdentity) error {

@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/workspacerepository"
+	"github.com/ucarion/jcs"
 )
 
 const (
@@ -44,6 +45,22 @@ type Binding struct {
 
 func (binding Binding) IsZero() bool {
 	return binding == (Binding{})
+}
+
+// Equal compares frozen values, not pointer addresses after JSON decoding.
+func Equal(a, b *Binding) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	x, y := *a, *b
+	x.Repository, y.Repository = nil, nil
+	if x != y {
+		return false
+	}
+	if a.Repository == nil || b.Repository == nil {
+		return a.Repository == nil && b.Repository == nil
+	}
+	return *a.Repository == *b.Repository
 }
 
 func (binding Binding) Validate() error {
@@ -129,4 +146,22 @@ func RootDescriptorSHA256(raw []byte) ([sha256.Size]byte, error) {
 
 func validUUID(value string) bool {
 	return value != "00000000-0000-0000-0000-000000000000" && uuidPattern.MatchString(value)
+}
+
+// Repository profiles cross a JSON HTTP boundary, which removes PostgreSQL
+// jsonb whitespace. Canonicalize this new profile; retain the historical
+// byte-exact fingerprint for existing AgentX bindings.
+func RepositoryRootDescriptorSHA256(raw []byte) ([sha256.Size]byte, error) {
+	if _, err := RootDescriptorSHA256(raw); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	canonical, err := jcs.Append(nil, value)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(canonical), nil
 }

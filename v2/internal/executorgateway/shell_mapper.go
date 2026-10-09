@@ -408,6 +408,13 @@ func resolveShellWorkingDirectory(principal ExecutorMCPPrincipal, requested, env
 	if requested == "" {
 		return base, nil
 	}
+	if principal.Workspace != nil && principal.Workspace.RepositoryID != "" && strings.HasPrefix(requested, "@repository/") {
+		rootRelative := strings.TrimPrefix(requested, "@repository/")
+		if err := validateRelativeEnvironmentPath(rootRelative); err != nil {
+			return "", err
+		}
+		return rootRelative, nil
+	}
 	if err := validateRelativeEnvironmentPath(requested); err != nil {
 		return "", fmt.Errorf("shell cwd: %w", err)
 	}

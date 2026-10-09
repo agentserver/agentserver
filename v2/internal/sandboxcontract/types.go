@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/workspacecontext"
 )
 
 const ProfileV1 = "e2b-semantic-subset/v1"
@@ -32,19 +33,7 @@ type PrepareRepositoryRequest struct {
 	Source     RepositorySource      `json:"source"`
 	Credential *RepositoryCredential `json:"credential,omitempty"`
 }
-type RepositoryContext struct {
-	Version          int    `json:"version"`
-	WorkingDirectory string `json:"workingDirectory"`
-	Instructions     []struct {
-		Path string `json:"path"`
-		Text string `json:"text"`
-	} `json:"instructions"`
-	Skills []struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Path        string `json:"path"`
-	} `json:"skills"`
-}
+type RepositoryContext = workspacecontext.Snapshot
 type PrepareRepositoryResponse struct {
 	CheckoutID string            `json:"checkoutId"`
 	Commit     string            `json:"commit"`

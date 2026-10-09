@@ -249,7 +249,7 @@ func (claims Claims) Validate() error {
 			if claims.SandboxID != "" || claims.TargetGeneration != 0 {
 				return errors.New("sandbox ensure capability must not preselect a target")
 			}
-		case "renew_activity", "release_activity", "delete", "get", "set_timeout":
+		case "renew_activity", "release_activity", "delete", "get", "set_timeout", "prepare_repository":
 			if !validText(claims.SandboxID, maximumTextBytes) || claims.TargetGeneration < 1 {
 				return errors.New("sandbox lifecycle target binding is invalid")
 			}

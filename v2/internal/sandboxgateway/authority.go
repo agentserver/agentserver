@@ -59,7 +59,7 @@ func bindSessionPrincipal(principal Principal, action string, session sandboxcon
 		principal.EnvironmentID != session.EnvironmentID {
 		return errors.New("lifecycle capability does not match the requested session")
 	}
-	if (action == ActionRenewActivity || action == ActionReleaseActivity) &&
+	if (action == ActionRenewActivity || action == ActionReleaseActivity || action == ActionPrepareRepository) &&
 		(principal.RunID == "" || principal.RunAttemptID == "" || principal.RunAttemptGeneration < 1 || principal.HolderID == "") {
 		return errors.New("activity action requires a run-attempt holder binding")
 	}

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 )
@@ -21,10 +22,10 @@ import (
 const maxResponseBytes = 2 * 1024 * 1024
 
 const (
-	ActionEnsure          = "ensure"
-	ActionRenewActivity   = "renew_activity"
-	ActionReleaseActivity = "release_activity"
-	ActionDelete          = "delete"
+	ActionEnsure            = "ensure"
+	ActionRenewActivity     = "renew_activity"
+	ActionReleaseActivity   = "release_activity"
+	ActionDelete            = "delete"
 	ActionPrepareRepository = "prepare_repository"
 )
 
@@ -98,10 +99,26 @@ func (client *Client) Ensure(ctx context.Context, request sandboxcontract.Ensure
 
 func (client *Client) PrepareRepository(ctx context.Context, request sandboxcontract.PrepareRepositoryRequest, authority TokenRequest) (sandboxcontract.PrepareRepositoryResponse, error) {
 	var response sandboxcontract.PrepareRepositoryResponse
-	if request.Profile == "" {
-		request.Profile = sandboxcontract.ProfileV1
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	copyClient := *client.httpClient
+	copyClient.Timeout = 0
+	if transport, ok := client.httpClient.Transport.(*http.Transport); ok {
+		t := transport.Clone()
+		t.ResponseHeaderTimeout = 5 * time.Minute
+		defer t.CloseIdleConnections()
+		copyClient.Transport = t
 	}
-	err := client.do(ctx, http.MethodPost, sandboxcontract.PrepareRepositoryPath, request, authority, &response)
+	clone := *client
+	clone.httpClient = &copyClient
+	preparePath, err := sandboxcontract.PrepareRepositoryPath(request.Ref.SandboxID)
+	if err != nil {
+		return response, err
+	}
+	err = clone.do(ctx, http.MethodPost, preparePath, request, authority, &response)
+	if err == nil && (response.CheckoutID != request.CheckoutID || response.Context.Validate(request.Source.WorkingDirectory) != nil) {
+		return response, errors.New("invalid repository preparation response")
+	}
 	return response, err
 }
 

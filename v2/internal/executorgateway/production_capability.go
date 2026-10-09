@@ -170,6 +170,11 @@ func WorkspaceBindingFromClaims(claims runcapability.Claims) (*workspaceauthorit
 		RootSHA256: digest, WorkingDirectory: claims.WorkspaceWorkingDirectory,
 		WorkingDirectoryVersion: claims.WorkspaceWorkingDirectoryVersion, RepositoryID: claims.WorkspaceRepositoryID,
 	}
+	repository, err := claims.RepositoryBinding()
+	if err != nil {
+		return nil, err
+	}
+	binding.Repository = repository
 	if err := binding.Validate(); err != nil {
 		return nil, err
 	}

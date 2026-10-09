@@ -788,8 +788,8 @@ func (service *Service) RunCommand(ctx context.Context, principal Principal, req
 }
 
 func (service *Service) PrepareRepository(ctx context.Context, principal Principal, request sandboxcontract.PrepareRepositoryRequest) (sandboxcontract.PrepareRepositoryResponse, error) {
-	if request.Profile == "" {
-		request.Profile = sandboxcontract.ProfileV1
+	if request.Profile != sandboxcontract.ProfileV1 || service.providerKind != executionbackend.KindKubernetes || request.Ref.Kind() != executionbackend.KindKubernetes || request.CheckoutID != request.Session.SessionID || !service.workspaceAllowed(request.Session.WorkspaceID) {
+		return sandboxcontract.PrepareRepositoryResponse{}, forbidden(errors.New("repository preparation profile is invalid"))
 	}
 	if request.Session.Validate() != nil || request.Ref.Validate() != nil || request.Session.WorkspaceID != principal.WorkspaceID || request.Session.SessionID != principal.SessionID || request.Session.EnvironmentID != principal.EnvironmentID {
 		return sandboxcontract.PrepareRepositoryResponse{}, forbidden(errors.New("repository session authority mismatch"))
@@ -814,7 +814,18 @@ func (service *Service) PrepareRepository(ctx context.Context, principal Princip
 	if state.Sandbox.ObservedState != "ready" {
 		return sandboxcontract.PrepareRepositoryResponse{}, unavailable("sandbox_not_ready", errors.New("sandbox is not ready"))
 	}
-	return provider.PrepareRepository(ctx, PrepareRepositoryProviderRequest{SessionRef: state.Sandbox.ProviderSessionRef, Request: request})
+	activity := corecontract.RenewManagedSandboxActivityRequest{SandboxID: request.Ref.SandboxID, Generation: request.Ref.TargetGeneration, RunID: principal.RunID, RunAttemptID: principal.RunAttemptID, RunAttemptGeneration: principal.RunAttemptGeneration, HolderID: principal.HolderID, ActivityTTLMillis: 30000}
+	if _, err := service.core.RenewManagedSandboxActivity(ctx, activity); err != nil {
+		return sandboxcontract.PrepareRepositoryResponse{}, coreServiceError("repository_attempt_not_live", err)
+	}
+	result, err := provider.PrepareRepository(ctx, PrepareRepositoryProviderRequest{SessionRef: state.Sandbox.ProviderSessionRef, Request: request})
+	if err != nil {
+		return result, err
+	}
+	if _, err := service.core.RenewManagedSandboxActivity(ctx, activity); err != nil {
+		return sandboxcontract.PrepareRepositoryResponse{}, coreServiceError("repository_attempt_not_live", err)
+	}
+	return result, nil
 }
 
 func (service *Service) SignalCommand(ctx context.Context, principal Principal, request sandboxcontract.SignalCommandRequest) (executionbackend.Exchange, error) {

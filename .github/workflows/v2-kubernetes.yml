@@ -181,7 +181,7 @@ jobs:
           AGENTSERVER_RUN_POSTGRES_TESTS=1 \
           AGENTSERVER_V2_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable' \
           go -C v2 test ./internal/coredb -count=1 \
-            -run 'TestPostgreSQL(ManagedNotSentFailure|KubernetesByteCloudCredentialUsesProcessEnvironment|ByteCloudCredentialUsesProcessEnvironmentIndependentOfLarkMode|ExecutionCrashAfterDispatchCommitDoesNotAuthorizeReplay)'
+            -run 'TestPostgreSQL(RepositoryCredential|SessionRepository|WorkspaceRepository|ManagedNotSentFailure|KubernetesByteCloudCredentialUsesProcessEnvironment|ByteCloudCredentialUsesProcessEnvironmentIndependentOfLarkMode|ExecutionCrashAfterDispatchCommitDoesNotAuthorizeReplay)'
       - name: Exercise stock Codex and previous-session upgrade on native Linux
         if: ${{ !inputs.chart_only && !contains(github.event.head_commit.message, '[k8s chart]') && inputs.application_repair != 'runtime' && inputs.application_repair != 'service' && !contains(github.event.head_commit.message, '[k8s service]') }}
         run: |

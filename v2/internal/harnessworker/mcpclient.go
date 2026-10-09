@@ -159,6 +159,7 @@ type pendingMCPCall struct {
 // MCPClient is the worker-owned, bounded executor-gateway MCP client. Its
 // bearer and HTTP transport never enter app-server configuration or stdio.
 type MCPClient struct {
+	projectInstructions  string
 	session              *mcp.ClientSession
 	transport            *exactMCPTransport
 	catalog              *Catalog
@@ -288,6 +289,10 @@ func ConnectMCP(ctx context.Context, config MCPClientConfig) (*MCPClient, error)
 		return failAfterConnect(fmt.Errorf("executor MCP negotiated protocol %q, require %q for stateful elicitation", negotiated, SupportedMCPProtocolVersion))
 	}
 
+	if len(initializeResult.Instructions) > 1024*1024+128 {
+		return failAfterConnect(errors.New("executor project instructions exceed bound"))
+	}
+	result.projectInstructions = initializeResult.Instructions
 	descriptors, err := collectToolCatalog(ctx, session, capture, config.Limits)
 	if err != nil {
 		return failAfterConnect(err)
@@ -303,7 +308,8 @@ func ConnectMCP(ctx context.Context, config MCPClientConfig) (*MCPClient, error)
 	return result, nil
 }
 
-func (c *MCPClient) Catalog() *Catalog { return c.catalog }
+func (c *MCPClient) Catalog() *Catalog      { return c.catalog }
+func (c *MCPClient) ProjectContext() string { return c.projectInstructions }
 
 func (c *MCPClient) Close() error {
 	c.closeOnce.Do(func() {

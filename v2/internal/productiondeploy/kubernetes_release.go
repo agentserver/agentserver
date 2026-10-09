@@ -92,7 +92,7 @@ func PrepareKubernetesRelease(base LoadedConfig, release KubernetesRelease) (Loa
 		APIEgress: []EgressRuleDocument{{CIDR: api.String(), Ports: []uint16{6443}}}, RuntimeExternalEgress: []EgressRuleDocument{},
 		RepositoryStorageClass: "longhorn", RepositoryStorageSize: "10Gi",
 	}
-	if previousKubernetes != nil {
+	if previousKubernetes != nil && previousKubernetes.RepositoryStorageClass != "" {
 		d.Managed.Kubernetes.RepositoryStorageClass = previousKubernetes.RepositoryStorageClass
 		d.Managed.Kubernetes.RepositoryStorageSize = previousKubernetes.RepositoryStorageSize
 		if previousKubernetes.RepositoryStorageClass != "" {

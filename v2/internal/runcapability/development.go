@@ -221,6 +221,9 @@ func (claims Claims) validateAuthority(profile string) error {
 	}
 	switch claims.Audience {
 	case AudienceExecutorMCP:
+		if _, err := claims.RepositoryBinding(); err != nil {
+			return err
+		}
 		if !validDevelopmentUUID(claims.ExecutorID) || !developmentDigestPattern.MatchString(claims.ToolCatalogDigest) ||
 			claims.ExpectedRunVersion < 1 || claims.ExpectedRunVersion > maxSafeJSONInteger ||
 			claims.ExpectedRunAttemptVersion < 1 || claims.ExpectedRunAttemptVersion > maxSafeJSONInteger ||
@@ -297,7 +300,7 @@ func (claims Claims) validateAuthority(profile string) error {
 			return fmt.Errorf("%s model capability contains managed sandbox authority", profile)
 		}
 		if claims.WorkspaceEnvironmentID != "" || claims.WorkspaceEnvironmentVersion != 0 || claims.WorkspaceRootSHA256 != "" ||
-			claims.WorkspaceWorkingDirectory != "" || claims.WorkspaceWorkingDirectoryVersion != 0 || claims.WorkspaceRepositoryID != "" || claims.PermissionMode != "" || claims.PermissionModeVersion != 0 {
+			claims.WorkspaceWorkingDirectory != "" || claims.WorkspaceWorkingDirectoryVersion != 0 || claims.WorkspaceRepositoryID != "" || claims.WorkspaceRepositoryDescriptor != "" || claims.PermissionMode != "" || claims.PermissionModeVersion != 0 {
 			return fmt.Errorf("%s model capability contains executor workspace authority", profile)
 		}
 	default:

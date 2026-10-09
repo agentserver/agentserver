@@ -20,14 +20,30 @@ import (
 type HTTPRuntimeClient struct{ client *http.Client }
 
 func (c *HTTPRuntimeClient) PrepareRepository(ctx context.Context, e Endpoint, r k8sruntime.PrepareRepositoryRequest) (k8sruntime.RepositoryState, error) {
-	resp, err := c.request(ctx, e, http.MethodPost, k8sruntime.PrepareRepositoryPath, r)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	copyClient := *c.client
+	if transport, ok := c.client.Transport.(*http.Transport); ok {
+		copyTransport := transport.Clone()
+		copyTransport.ResponseHeaderTimeout = 5 * time.Minute
+		defer copyTransport.CloseIdleConnections()
+		copyClient.Transport = copyTransport
+	}
+	clone := HTTPRuntimeClient{client: &copyClient}
+	resp, err := clone.request(ctx, e, http.MethodPost, k8sruntime.PrepareRepositoryPath, r)
 	if err != nil {
 		return k8sruntime.RepositoryState{}, err
 	}
 	defer resp.Body.Close()
 	var state k8sruntime.RepositoryState
-	if resp.StatusCode != http.StatusOK || decodeRuntimeJSON(resp.Body, &state) != nil {
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1024*1024+1))
+	decoder.DisallowUnknownFields()
+	if resp.StatusCode != http.StatusOK || decoder.Decode(&state) != nil {
 		return k8sruntime.RepositoryState{}, errors.New("runtime repository preparation failed")
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF || state.CheckoutID != r.CheckoutID || state.Context.Validate(r.Source.WorkingDirectory) != nil {
+		return k8sruntime.RepositoryState{}, errors.New("invalid runtime repository response")
 	}
 	return state, nil
 }

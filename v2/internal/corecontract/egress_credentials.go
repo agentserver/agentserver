@@ -102,11 +102,14 @@ type ResolveExecutionCredentialResponse struct {
 }
 
 type ResolveRepositoryCredentialRequest struct {
-	Operation     EgressCredentialOperation `json:"operation"`
-	BindingID     string                    `json:"bindingId"`
-	EnvironmentID string                    `json:"environmentId"`
-	RunID         string                    `json:"runId"`
-	RunAttemptID  string                    `json:"runAttemptId"`
+	Operation                 EgressCredentialOperation `json:"operation"`
+	BindingID                 string                    `json:"bindingId"`
+	EnvironmentID             string                    `json:"environmentId"`
+	RunID                     string                    `json:"runId"`
+	RunAttemptID              string                    `json:"runAttemptId"`
+	HolderID                  string                    `json:"holderId"`
+	ExpectedAuthorityVersion  int64                     `json:"-"`
+	ExpectedCredentialVersion int64                     `json:"-"`
 }
 type ResolveRepositoryCredentialResponse struct {
 	Configured bool   `json:"configured"`

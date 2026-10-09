@@ -315,8 +315,8 @@ type RepositoryCredentialClient interface {
 
 func (client *CoreConnectionClient) ResolveRepositoryCredential(ctx context.Context, request corecontract.ResolveRepositoryCredentialRequest) (corecontract.ResolveRepositoryCredentialResponse, error) {
 	var response corecontract.ResolveRepositoryCredentialResponse
-	if err := client.post(ctx, corecontract.ResolveRepositoryCredentialPath, request, &response, http.StatusOK); err != nil {
-		return response, err
+	if err := client.postWithPolicy(ctx, corecontract.ResolveRepositoryCredentialPath, request, &response, http.StatusOK, "", true, nil); err != nil {
+		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("Core repository credential resolution failed")
 	}
 	return response, nil
 }

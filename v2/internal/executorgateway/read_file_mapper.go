@@ -163,7 +163,11 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 	}
 	relativePath := arguments.Path
 	if principal.Workspace != nil {
-		relativePath = path.Join(principal.Workspace.WorkingDirectory, arguments.Path)
+		if principal.Workspace.RepositoryID != "" && strings.HasPrefix(arguments.Path, "@repository/") {
+			relativePath = strings.TrimPrefix(arguments.Path, "@repository/")
+		} else {
+			relativePath = path.Join(principal.Workspace.WorkingDirectory, arguments.Path)
+		}
 		if err := validateReadFileRelativePath(relativePath); err != nil {
 			return ReadFileV1Plan{}, fmt.Errorf("read_file path escapes frozen working directory: %w", err)
 		}

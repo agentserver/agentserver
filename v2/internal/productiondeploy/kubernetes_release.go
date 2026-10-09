@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/netip"
 
+	"github.com/agentserver/agentserver/v2/internal/productionimage"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
@@ -16,6 +17,7 @@ type KubernetesRelease struct {
 	EnvironmentID, APICIDR                                 string
 	AllWorkspaces                                          bool
 	UpgradeCodex                                           bool
+	UpgradeManagedSkill                                    bool
 	CNGatewayURL, CNGatewayServerName, CNEnvironmentID     string
 }
 
@@ -52,6 +54,12 @@ func PrepareKubernetesRelease(base LoadedConfig, release KubernetesRelease) (Loa
 	if release.UpgradeCodex && d.Images.Harness == release.HarnessImage {
 		return LoadedConfig{}, errors.New("Codex upgrade requires a newly published harness image containing the current bundle")
 	}
+	if release.UpgradeManagedSkill {
+		if d.Images.Harness == release.HarnessImage {
+			return LoadedConfig{}, errors.New("managed instruction upgrade requires a newly published harness image")
+		}
+		d.Managed.BaseInstructionsSHA256 = productionimage.ManagedSkillSHA256
+	}
 	api, err := netip.ParsePrefix(release.APICIDR)
 	if err != nil || !api.Addr().IsPrivate() || !api.Addr().Is4() || api.Bits() != 32 {
 		return LoadedConfig{}, errors.New("Kubernetes API must be an explicit private IPv4 /32 endpoint")
@@ -72,6 +80,7 @@ func PrepareKubernetesRelease(base LoadedConfig, release KubernetesRelease) (Loa
 	d.Managed.TAE = ManagedTAEDocument{}
 	d.Managed.Environment.EnvironmentID = release.EnvironmentID
 	d.Managed.Environment.Root = ManagedEnvironmentRootDocument{Path: "/workspace", DefaultCWD: ".", DisplayName: "SG · Kubernetes", Description: "Session-isolated managed CLI sandbox; ephemeral workspace"}
+	previousKubernetes := d.Managed.Kubernetes
 	d.Managed.Kubernetes = &KubernetesSandboxDocument{
 		BubblewrapProfile:     true,
 		APIServerEntityPolicy: true,
@@ -81,6 +90,14 @@ func PrepareKubernetesRelease(base LoadedConfig, release KubernetesRelease) (Loa
 		Namespace:             "agentserver-sandboxes", Pool: "managed-cli-v1", Scope: "sg-managed-cli",
 		GatewayImage: release.GatewayImage, RuntimeTLSSecret: "agentserver-runtime-tls", RuntimeServerName: "sandbox-runtime.agentserver.internal",
 		APIEgress: []EgressRuleDocument{{CIDR: api.String(), Ports: []uint16{6443}}}, RuntimeExternalEgress: []EgressRuleDocument{},
+		RepositoryStorageClass: "longhorn", RepositoryStorageSize: "10Gi",
+	}
+	if previousKubernetes != nil {
+		d.Managed.Kubernetes.RepositoryStorageClass = previousKubernetes.RepositoryStorageClass
+		d.Managed.Kubernetes.RepositoryStorageSize = previousKubernetes.RepositoryStorageSize
+		if previousKubernetes.RepositoryStorageClass != "" {
+			d.Managed.Environment.Root.Description = "Session-isolated managed sandbox with persistent repository checkouts"
+		}
 	}
 	// The CN profile is optional at the artifact layer so older SG-only
 	// cutover fixtures remain valid. The production release command supplies

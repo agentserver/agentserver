@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -154,6 +155,20 @@ func validateRunObjectPointer(field string, pointer ObjectPointer) error {
 }
 
 func (s *StateStore) insertRunLaunchInput(ctx context.Context, transaction pgx.Tx, command CreateRunCommand) error {
+	var repositoryJSON []byte
+	if command.Workspace != nil && command.Workspace.RepositoryID != "" {
+		repository, err := s.readSessionRepository(ctx, transaction, "CreateRun", command.WorkspaceID, command.SessionID)
+		if err != nil {
+			return err
+		}
+		if repository == nil || repository.CheckoutID != command.Workspace.RepositoryID {
+			return commandError(ErrorInvalidState, "CreateRun", "session", command.SessionID, "repository binding changed before run freeze")
+		}
+		repositoryJSON, err = json.Marshal(repository)
+		if err != nil {
+			return err
+		}
+	}
 	var gatewayID, grantUserID, model any
 	var gatewayVersion any
 	if command.LLMGateway != (RunLLMGatewayBinding{}) {
@@ -212,10 +227,10 @@ INSERT INTO %s
 	 managed_sandbox_setting_version, managed_sandbox_region,
 	 managed_sandbox_environment_id, permission_mode, permission_mode_version,
 	 workspace_environment_id, workspace_environment_version, workspace_root_sha256,
-	 workspace_working_directory, workspace_working_directory_version)
+	 workspace_working_directory, workspace_working_directory_version, repository_binding)
 VALUES
 	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-	 $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)`, s.table("run_launch_states"))
+	 $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)`, s.table("run_launch_states"))
 	if _, err := transaction.Exec(ctx, query,
 		command.RunID,
 		command.WorkspaceID,
@@ -244,6 +259,7 @@ VALUES
 		workspaceRootSHA256,
 		workspaceWorkingDirectory,
 		workspaceWorkingDirectoryVersion,
+		repositoryJSON,
 	); err != nil {
 		var postgresError *pgconn.PgError
 		if pgxErrorAs(err, &postgresError) && postgresError.Code == "23505" {
@@ -270,21 +286,22 @@ func (s *StateStore) readRunWorkspaceBinding(ctx context.Context, transaction pg
 	query := fmt.Sprintf(`
 SELECT workspace_environment_id::text, workspace_environment_version,
        workspace_root_sha256, workspace_working_directory,
-       workspace_working_directory_version
+       workspace_working_directory_version, repository_binding
 FROM %s
 WHERE run_id = $1`, s.table("run_launch_states"))
 	var environmentID, workingDirectory *string
 	var environmentVersion, workingDirectoryVersion *int64
 	var rootSHA256 []byte
+	var repositoryJSON []byte
 	if err := transaction.QueryRow(ctx, query, runID).Scan(
-		&environmentID, &environmentVersion, &rootSHA256, &workingDirectory, &workingDirectoryVersion,
+		&environmentID, &environmentVersion, &rootSHA256, &workingDirectory, &workingDirectoryVersion, &repositoryJSON,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, commandError(ErrorInvalidState, operation, "run", runID, "run has no immutable launch authority")
 		}
 		return nil, databaseError(operation+" read run workspace binding", err)
 	}
-	if environmentID == nil && environmentVersion == nil && rootSHA256 == nil && workingDirectory == nil && workingDirectoryVersion == nil {
+	if environmentID == nil && environmentVersion == nil && rootSHA256 == nil && workingDirectory == nil && workingDirectoryVersion == nil && repositoryJSON == nil {
 		return nil, nil
 	}
 	if environmentID == nil || environmentVersion == nil || len(rootSHA256) != sha256.Size || workingDirectory == nil || workingDirectoryVersion == nil {
@@ -296,6 +313,14 @@ WHERE run_id = $1`, s.table("run_launch_states"))
 		EnvironmentID: *environmentID, EnvironmentVersion: *environmentVersion,
 		RootSHA256: digest, WorkingDirectory: *workingDirectory,
 		WorkingDirectoryVersion: *workingDirectoryVersion,
+	}
+	if len(repositoryJSON) > 0 {
+		repository, err := decodeRepositoryBinding(repositoryJSON)
+		if err != nil || repository == nil || repository.EnvironmentID != binding.EnvironmentID {
+			return nil, databaseError(operation+" decode run repository", errors.New("stored repository binding is invalid"))
+		}
+		binding.RepositoryID = repository.CheckoutID
+		binding.Repository = repository
 	}
 	if err := binding.Validate(); err != nil {
 		return nil, databaseError(operation+" validate run workspace binding", err)

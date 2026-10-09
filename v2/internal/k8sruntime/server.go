@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/repositorycheckout"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 )
 
@@ -48,18 +49,28 @@ type Config struct {
 	Workspace       string
 	Bwrap           string
 	ProxyURL        string
+	// Empty leaves repository preparation disabled. This is a dedicated
+	// persistent session volume, never the model-visible /workspace itself.
+	RepositoryStorage string
+	repositoryTree    string
 }
 
 type Server struct {
-	config    Config
-	identity  Identity
-	mu        sync.Mutex
-	bound     *Binding
-	ready     bool
-	closed    bool
-	ops       map[string]struct{}
-	processes map[string]*process
-	command   func(sandboxcontract.RunCommandRequest) (*exec.Cmd, error)
+	config        Config
+	identity      Identity
+	mu            sync.Mutex
+	bound         *Binding
+	ready         bool
+	closed        bool
+	ops           map[string]struct{}
+	processes     map[string]*process
+	command       func(sandboxcontract.RunCommandRequest) (*exec.Cmd, error)
+	projectMu     sync.RWMutex
+	checkout      *repositorycheckout.Manager
+	projectID     string
+	projectTree   string
+	projectCommit string
+	projectCancel context.CancelFunc // guarded by mu; cancelled during shutdown
 }
 
 type process struct {
@@ -90,7 +101,21 @@ func New(config Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{config: config, identity: Identity{config.PodUID, hex.EncodeToString(nonce[:])}, ops: map[string]struct{}{}, processes: map[string]*process{}}
-	s.command = func(r sandboxcontract.RunCommandRequest) (*exec.Cmd, error) { return sandboxCommand(config, r) }
+	if config.RepositoryStorage != "" {
+		if config.RepositoryStorage != "/var/lib/agentserver/repositories" {
+			return nil, errors.New("repository storage must use the dedicated session volume mount")
+		}
+		var err error
+		s.checkout, err = repositorycheckout.New(config.RepositoryStorage, "/usr/bin/git")
+		if err != nil {
+			return nil, err
+		}
+	}
+	s.command = func(r sandboxcontract.RunCommandRequest) (*exec.Cmd, error) {
+		c := s.config
+		c.repositoryTree = s.projectTree
+		return sandboxCommand(c, r)
+	}
 	return s, nil
 }
 
@@ -183,6 +208,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.URL.Path == PrepareRepositoryPath:
+		s.prepareRepository(w, r)
+	case r.URL.Path == RepositoryContextPath:
+		s.repositoryContext(w, r)
 	case strings.HasSuffix(r.URL.Path, "/commands:run"):
 		var command sandboxcontract.RunCommandRequest
 		if !decode(w, r, &command) {
@@ -193,6 +222,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reject(w, "invalid_command", 400)
 			return
 		}
+		if !s.projectMu.TryRLock() {
+			reject(w, "repository_busy", 409)
+			return
+		}
+		defer s.projectMu.RUnlock()
 		if !s.accept(command.Identity, command.Ref, command.ProcessID) {
 			reject(w, "duplicate_or_fenced", 409)
 			return
@@ -223,6 +257,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reject(w, "invalid_read", 400)
 			return
 		}
+		if !s.projectMu.TryRLock() {
+			reject(w, "repository_busy", 409)
+			return
+		}
+		defer s.projectMu.RUnlock()
 		if !s.accept(command.Identity, command.Ref, "") {
 			reject(w, "duplicate_or_fenced", 409)
 			return
@@ -510,7 +549,7 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request, req sandboxcontrac
 		reject(w, "path_outside_workspace", 400)
 		return
 	}
-	root, err := os.OpenRoot(s.config.Workspace)
+	root, err := os.OpenRoot(s.workspaceSource())
 	if err != nil {
 		reject(w, "workspace_unavailable", 503)
 		return
@@ -561,11 +600,15 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request, req sandboxcontrac
 func (s *Server) Close() {
 	s.mu.Lock()
 	s.closed = true
+	cancelProject := s.projectCancel
 	all := make([]*process, 0, len(s.processes))
 	for _, p := range s.processes {
 		all = append(all, p)
 	}
 	s.mu.Unlock()
+	if cancelProject != nil {
+		cancelProject()
+	}
 	for _, p := range all {
 		p.kill()
 	}

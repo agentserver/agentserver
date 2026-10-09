@@ -132,6 +132,14 @@ func (authenticator *ProductionExecutorMCPAuthenticator) AuthenticateExecutorMCP
 		return ExecutorMCPPrincipal{}, errors.New("production executor MCP workspace authority is invalid")
 	}
 	principal.Workspace = workspace
+	principal.Repository, err = repositoryFromCapability(claims)
+	if err != nil {
+		return ExecutorMCPPrincipal{}, errors.New("production executor MCP repository authority is invalid")
+	}
+	principal.Repository, err = repositoryFromCapability(claims)
+	if err != nil {
+		return ExecutorMCPPrincipal{}, errors.New("production executor MCP repository authority is invalid")
+	}
 	if claims.ManagedSandboxRegion != "" {
 		principal.ManagedSandbox = &ExecutorManagedSandboxAuthority{
 			SettingVersion: claims.ManagedSandboxSettingVersion, Region: claims.ManagedSandboxRegion,
@@ -147,7 +155,7 @@ func (authenticator *ProductionExecutorMCPAuthenticator) AuthenticateExecutorMCP
 func WorkspaceBindingFromClaims(claims runcapability.Claims) (*workspaceauthority.Binding, error) {
 	configured := claims.WorkspaceEnvironmentID != "" || claims.WorkspaceEnvironmentVersion != 0 ||
 		claims.WorkspaceRootSHA256 != "" || claims.WorkspaceWorkingDirectory != "" ||
-		claims.WorkspaceWorkingDirectoryVersion != 0
+		claims.WorkspaceWorkingDirectoryVersion != 0 || claims.WorkspaceRepositoryID != ""
 	if !configured {
 		return nil, nil
 	}
@@ -160,7 +168,7 @@ func WorkspaceBindingFromClaims(claims runcapability.Claims) (*workspaceauthorit
 	binding := &workspaceauthority.Binding{
 		EnvironmentID: claims.WorkspaceEnvironmentID, EnvironmentVersion: claims.WorkspaceEnvironmentVersion,
 		RootSHA256: digest, WorkingDirectory: claims.WorkspaceWorkingDirectory,
-		WorkingDirectoryVersion: claims.WorkspaceWorkingDirectoryVersion,
+		WorkingDirectoryVersion: claims.WorkspaceWorkingDirectoryVersion, RepositoryID: claims.WorkspaceRepositoryID,
 	}
 	if err := binding.Validate(); err != nil {
 		return nil, err

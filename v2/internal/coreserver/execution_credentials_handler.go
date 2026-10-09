@@ -39,9 +39,28 @@ func (handler *ExecutionCredentialHandler) ServeHTTP(response http.ResponseWrite
 		handler.authority(response, request)
 	case corecontract.ResolveExecutionCredentialPath:
 		handler.resolve(response, request)
+	case corecontract.ResolveRepositoryCredentialPath:
+		handler.repository(response, request)
 	default:
 		writeError(response, http.StatusNotFound, corecontract.ErrorResponse{Code: "not_found", Message: "v2 execution credential endpoint not found"})
 	}
+}
+
+func (handler *ExecutionCredentialHandler) repository(response http.ResponseWriter, request *http.Request) {
+	if err := handler.authorizer.AuthorizeWorkload(request, "execution.repository-credentials.resolve"); err != nil {
+		writeError(response, http.StatusForbidden, corecontract.ErrorResponse{Code: "forbidden", Message: "workload is not authorized for repository credential resolution"})
+		return
+	}
+	var command corecontract.ResolveRepositoryCredentialRequest
+	if !decodeCommandWithLimit(response, request, &command, maxEgressCredentialCommandBytes) {
+		return
+	}
+	result, err := handler.service.ResolveRepositoryCredential(request.Context(), command)
+	if err != nil {
+		writeCommandError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *ExecutionCredentialHandler) authority(response http.ResponseWriter, request *http.Request) {

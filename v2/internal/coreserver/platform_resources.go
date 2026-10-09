@@ -52,6 +52,7 @@ func (handler *PlatformResourceHandler) Routes() http.Handler {
 	mux.HandleFunc(corecontract.WorkspaceResourceRoutePattern, handler.workspaceResource)
 	mux.HandleFunc(corecontract.WorkspaceArchiveRoutePattern, handler.archiveWorkspace)
 	mux.HandleFunc(corecontract.WorkspaceManagedSandboxRoutePattern, handler.managedSandboxSetting)
+	mux.HandleFunc(corecontract.WorkspaceRepositoryRoutePattern, handler.repository)
 	mux.HandleFunc(corecontract.WorkspaceMembersCollectionPattern, handler.memberCollection)
 	mux.HandleFunc(corecontract.WorkspaceMemberResourceRoutePattern, handler.memberResource)
 	return mux

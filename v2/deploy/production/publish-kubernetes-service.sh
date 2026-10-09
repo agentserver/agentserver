@@ -18,6 +18,7 @@ for binary in agentserver-core agentserver-probe platform-gateway browser-gatewa
 done
 if [ "${PUBLISH_HARNESS:-false}" = true ]; then
   mkdir -p "$RELEASE_DIRECTORY/harness/bin"
+  bash "$v2_root/deploy/production/prepare-managed-instructions.sh" "$RELEASE_DIRECTORY/harness/packs"
   if [ -n "${CODEX_RUNTIME_DIRECTORY:-}" ]; then
     cp -R "$CODEX_RUNTIME_DIRECTORY" "$RELEASE_DIRECTORY/harness/runtime"
   else

@@ -36,6 +36,9 @@ type Config struct {
 	// Explicit operator choice: the renderer and sandbox controller install
 	// no ingress or egress policy for these runtime Pods.
 	UnrestrictedNetwork bool
+	// Grants only the lifecycle gateway the extra resource creation rights.
+	// Runtime Pods still receive no Kubernetes credentials.
+	RepositoryStorage bool
 }
 
 func Resources(c Config) ([]map[string]any, error) {
@@ -116,6 +119,17 @@ func Resources(c Config) ([]map[string]any, error) {
 			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "sandbox-lifecycle"},
 			"subjects": []any{map[string]any{"kind": "ServiceAccount", "name": c.GatewayServiceAccount, "namespace": c.GatewayNamespace}},
 		}),
+	}
+	if c.RepositoryStorage {
+		for _, obj := range objects {
+			if obj["kind"] != "Role" {
+				continue
+			}
+			obj["rules"] = append(obj["rules"].([]any),
+				map[string]any{"apiGroups": []any{""}, "resources": []any{"persistentvolumeclaims"}, "verbs": []any{"create", "get"}},
+				map[string]any{"apiGroups": []any{"extensions.agents.x-k8s.io"}, "resources": []any{"sandboxtemplates", "sandboxwarmpools"}, "verbs": []any{"create", "get"}},
+			)
+		}
 	}
 	if c.UnrestrictedNetwork {
 		return objects, nil

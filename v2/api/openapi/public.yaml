@@ -253,6 +253,33 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/repository": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}],
+      "get": {
+        "operationId": "getWorkspaceRepository",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["workspaces:read"]}],
+        "responses": {
+          "200": {"description": "Repository default (version zero when never configured)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GetWorkspaceRepositoryResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
+      "patch": {
+        "operationId": "updateWorkspaceRepository",
+        "description": "Owner-only CAS update. Explicit source:null clears the default without deleting session files. Git secrets must be uploaded through the workspace credential API, never embedded in the URL.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["workspaces:update"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceRepositoryRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated repository default", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceRepositoryResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/managed-sandbox-settings": {
       "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}],
       "get": {
@@ -1012,6 +1039,42 @@
       "ArchiveWorkspaceResponse": {
         "type": "object", "additionalProperties": false, "required": ["workspace", "changed"],
         "properties": {"workspace": {"$ref": "#/components/schemas/WorkspaceState"}, "changed": {"type": "boolean"}}
+      },
+      "WorkspaceRepositorySource": {
+        "type": "object", "additionalProperties": false,
+        "required": ["url", "ref", "workingDirectory"],
+        "properties": {
+          "url": {"type": "string", "maxLength": 2048, "description": "HTTPS code.byted.org group/repository URL without embedded credentials"},
+          "ref": {"type": "string", "maxLength": 256, "description": "Branch, tag or commit; empty selects the remote default branch"},
+          "workingDirectory": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Canonical repository-relative directory; '.' is the root"},
+          "credentialBindingId": {"$ref": "#/components/schemas/UUID"}
+        }
+      },
+      "WorkspaceRepositorySettingState": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspaceId", "source", "version"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "source": {"oneOf": [{"$ref": "#/components/schemas/WorkspaceRepositorySource"}, {"type": "null"}]},
+          "version": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "updatedBy": {"$ref": "#/components/schemas/UUID"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "GetWorkspaceRepositoryResponse": {
+        "type": "object", "additionalProperties": false, "required": ["setting"],
+        "properties": {"setting": {"$ref": "#/components/schemas/WorkspaceRepositorySettingState"}}
+      },
+      "UpdateWorkspaceRepositoryRequest": {
+        "type": "object", "additionalProperties": false, "required": ["source", "expectedVersion"],
+        "properties": {
+          "source": {"oneOf": [{"$ref": "#/components/schemas/WorkspaceRepositorySource"}, {"type": "null"}]},
+          "expectedVersion": {"type": "integer", "minimum": 0, "maximum": 9007199254740990}
+        }
+      },
+      "UpdateWorkspaceRepositoryResponse": {
+        "type": "object", "additionalProperties": false, "required": ["setting", "changed"],
+        "properties": {"setting": {"$ref": "#/components/schemas/WorkspaceRepositorySettingState"}, "changed": {"type": "boolean"}}
       },
       "ManagedSandboxRegion": {
         "type": "string", "enum": ["cn", "boe", "i18n-bd", "i18n-tt", "sg"]

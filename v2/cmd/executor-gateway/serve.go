@@ -777,12 +777,17 @@ func (authenticator devRunCapabilityAuthenticator) AuthenticateExecutorMCP(reque
 	if err != nil {
 		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP workspace authority is invalid")
 	}
+	repository, err := executorgateway.RepositoryBindingFromCapability(claims)
+	if err != nil {
+		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP repository authority is invalid")
+	}
 	return executorgateway.ExecutorMCPPrincipal{
 		CapabilityID: "insecure-dev:" + claims.CapabilityID,
 		WorkspaceID:  claims.WorkspaceID, SessionID: claims.SessionID, ActorID: claims.ActorID, ExecutorID: claims.ExecutorID,
 		ToolCatalogDigest: claims.ToolCatalogDigest,
 		MaxApprovalTTL:    time.Duration(claims.MaxApprovalTTLMillis) * time.Millisecond,
 		Workspace:         workspace, PermissionMode: claims.PermissionMode, PermissionModeVersion: claims.PermissionModeVersion,
+		Repository:          repository,
 		RunDeadline:         time.UnixMilli(claims.RunDeadlineUnixMS).UTC(),
 		CapabilityExpiresAt: time.UnixMilli(claims.ExpiresAtUnixMS).UTC(),
 		Run: executorgateway.ExecutorMCPRunContext{

@@ -86,7 +86,7 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 		response.Workspace = &corecontract.RunLaunchWorkspaceState{
 			EnvironmentID: binding.EnvironmentID, EnvironmentVersion: binding.EnvironmentVersion,
 			RootSHA256:       hex.EncodeToString(binding.RootSHA256[:]),
-			WorkingDirectory: binding.WorkingDirectory, WorkingDirectoryVersion: binding.WorkingDirectoryVersion,
+			WorkingDirectory: binding.WorkingDirectory, WorkingDirectoryVersion: binding.WorkingDirectoryVersion, RepositoryID: binding.RepositoryID,
 		}
 	}
 	if resolved.PreviousCheckpoint != nil {

@@ -25,7 +25,12 @@ const (
 	ActionRenewActivity   = "renew_activity"
 	ActionReleaseActivity = "release_activity"
 	ActionDelete          = "delete"
+	ActionPrepareRepository = "prepare_repository"
 )
+
+type RepositoryPreparer interface {
+	PrepareRepository(context.Context, sandboxcontract.PrepareRepositoryRequest, TokenRequest) (sandboxcontract.PrepareRepositoryResponse, error)
+}
 
 type TokenRequest struct {
 	Action               string
@@ -88,6 +93,15 @@ func (client *Client) Ensure(ctx context.Context, request sandboxcontract.Ensure
 	if err == nil {
 		err = response.Validate()
 	}
+	return response, err
+}
+
+func (client *Client) PrepareRepository(ctx context.Context, request sandboxcontract.PrepareRepositoryRequest, authority TokenRequest) (sandboxcontract.PrepareRepositoryResponse, error) {
+	var response sandboxcontract.PrepareRepositoryResponse
+	if request.Profile == "" {
+		request.Profile = sandboxcontract.ProfileV1
+	}
+	err := client.do(ctx, http.MethodPost, sandboxcontract.PrepareRepositoryPath, request, authority, &response)
 	return response, err
 }
 

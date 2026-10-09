@@ -90,3 +90,39 @@ func TestDedicatedProfileDoesNotChangeRuntimeClassOrGrantCapabilities(t *testing
 		}
 	}
 }
+
+func TestRepositoryStorageRBACDoesNotAllowVolumeDeletionOrPodExec(t *testing.T) {
+	c := Config{Namespace: "agentserver-sandboxes", TemplateName: "managed-cli-v1", RuntimeImage: "registry.example/runtime:1", RuntimeTLSSecret: "runtime-tls", GatewayNamespace: "agentserver", GatewayServiceAccount: "sandbox-gateway-k8s", GatewayIdentity: "spiffe://agentserver.test/ns/agentserver/sa/sandbox-gateway-k8s", RepositoryStorage: true, UnrestrictedNetwork: true}
+	objects, err := Resources(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, obj := range objects {
+		if obj["kind"] == "NetworkPolicy" {
+			t.Fatal("repository storage added network restrictions")
+		}
+		if obj["kind"] != "Role" {
+			continue
+		}
+		for _, entry := range obj["rules"].([]any) {
+			rule := entry.(map[string]any)
+			for _, resource := range rule["resources"].([]any) {
+				if resource == "pods/exec" || resource == "secrets" || resource == "*" {
+					t.Fatal("repository storage widened runtime authority")
+				}
+				if resource == "persistentvolumeclaims" {
+					found = true
+					for _, verb := range rule["verbs"].([]any) {
+						if verb != "create" && verb != "get" {
+							t.Fatal("gateway can delete or rewrite session PVCs")
+						}
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("repository storage RBAC missing")
+	}
+}

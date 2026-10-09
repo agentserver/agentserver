@@ -941,6 +941,7 @@ func mountCorePlatformResourceRoutes(mux *http.ServeMux, handler *coreserver.Pla
 	mux.Handle(corecontract.WorkspaceResourceRoutePattern, routes)
 	mux.Handle(corecontract.WorkspaceArchiveRoutePattern, routes)
 	mux.Handle(corecontract.WorkspaceManagedSandboxRoutePattern, routes)
+	mux.Handle(corecontract.WorkspaceRepositoryRoutePattern, routes)
 	mux.Handle(corecontract.WorkspaceMembersCollectionPattern, routes)
 	mux.Handle(corecontract.WorkspaceMemberResourceRoutePattern, routes)
 }

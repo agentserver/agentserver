@@ -275,6 +275,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/workspaces/{workspaceId}/repository": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getWorkspaceRepository"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Owner-only CAS update. Explicit source:null clears the default without deleting session files. Git secrets must be uploaded through the workspace credential API, never embedded in the URL. */
+        patch: operations["updateWorkspaceRepository"];
+        trace?: never;
+    };
     "/v2/workspaces/{workspaceId}/managed-sandbox-settings": {
         parameters: {
             query?: never;
@@ -936,6 +955,34 @@ export interface components {
         };
         ArchiveWorkspaceResponse: {
             workspace: components["schemas"]["WorkspaceState"];
+            changed: boolean;
+        };
+        WorkspaceRepositorySource: {
+            /** @description HTTPS code.byted.org group/repository URL without embedded credentials */
+            url: string;
+            /** @description Branch, tag or commit; empty selects the remote default branch */
+            ref: string;
+            /** @description Canonical repository-relative directory; '.' is the root */
+            workingDirectory: string;
+            credentialBindingId?: components["schemas"]["UUID"];
+        };
+        WorkspaceRepositorySettingState: {
+            workspaceId: components["schemas"]["UUID"];
+            source: components["schemas"]["WorkspaceRepositorySource"] | null;
+            version: number;
+            updatedBy?: components["schemas"]["UUID"];
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        GetWorkspaceRepositoryResponse: {
+            setting: components["schemas"]["WorkspaceRepositorySettingState"];
+        };
+        UpdateWorkspaceRepositoryRequest: {
+            source: components["schemas"]["WorkspaceRepositorySource"] | null;
+            expectedVersion: number;
+        };
+        UpdateWorkspaceRepositoryResponse: {
+            setting: components["schemas"]["WorkspaceRepositorySettingState"];
             changed: boolean;
         };
         /** @enum {string} */
@@ -2165,6 +2212,62 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArchiveWorkspaceResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    getWorkspaceRepository: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Repository default (version zero when never configured) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetWorkspaceRepositoryResponse"];
+                };
+            };
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+        };
+    };
+    updateWorkspaceRepository: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWorkspaceRepositoryRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated repository default */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateWorkspaceRepositoryResponse"];
                 };
             };
             400: components["responses"]["PublicError"];

@@ -12,8 +12,14 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 37 {
-		t.Fatalf("migration count = %d, want 37", len(migrations))
+	if len(migrations) != 39 {
+		t.Fatalf("migration count = %d, want 39", len(migrations))
+	}
+	if migrations[38].Name != "session_repositories" {
+		t.Fatal("missing session repository migration")
+	}
+	if migrations[37].Name != "workspace_repository_settings" {
+		t.Fatal("missing workspace repository migration")
 	}
 	if migrations[36].Name != "operation_not_sent_evidence" {
 		t.Fatal("missing pre-dispatch evidence migration")

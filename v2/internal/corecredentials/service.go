@@ -118,6 +118,13 @@ type Service struct {
 	now            func() time.Time
 }
 
+func (service *Service) Registry() *ProviderRegistry {
+	if service == nil {
+		return nil
+	}
+	return service.registry
+}
+
 func NewService(config ServiceConfig) (*Service, error) {
 	if config.Registry == nil || config.Bindings == nil || config.LiveAuthorizer == nil ||
 		config.Sealer == nil || config.Now == nil {

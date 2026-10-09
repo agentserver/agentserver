@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
+	"github.com/agentserver/agentserver/v2/internal/productionimage"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -39,6 +40,48 @@ func TestKubernetesReleaseCutover(t *testing.T) {
 	r.EnvironmentID = base.Document.Managed.Environment.EnvironmentID
 	if _, err := PrepareKubernetesRelease(base, r); err == nil {
 		t.Fatal("TAE environment ID was reused")
+	}
+}
+
+func TestKubernetesManagedInstructionsUpgradeIsExplicitAndRequiresNewHarness(t *testing.T) {
+	d := kubernetesConfigDocument()
+	d.Managed.BaseInstructionsSHA256 = strings.Repeat("e", 64)
+	base, err := ValidateConfig(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := KubernetesRelease{ServiceImage: d.Images.Service, HarnessImage: d.Images.Harness, RuntimeImage: d.Images.ManagedSandbox,
+		GatewayImage: d.Managed.Kubernetes.GatewayImage, EnvironmentID: d.Managed.Environment.EnvironmentID, APICIDR: "10.251.224.59/32"}
+	preserved, err := PrepareKubernetesRelease(base, release)
+	if err != nil || preserved.Document.Managed.BaseInstructionsSHA256 != d.Managed.BaseInstructionsSHA256 {
+		t.Fatalf("unrebuilt harness instructions changed: %v", err)
+	}
+	release.UpgradeManagedSkill = true
+	if _, err := PrepareKubernetesRelease(base, release); err == nil {
+		t.Fatal("new instructions accepted for unchanged harness")
+	}
+	release.HarnessImage = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness@sha256:" + strings.Repeat("f", 64)
+	updated, err := PrepareKubernetesRelease(base, release)
+	if err != nil || updated.Document.Managed.BaseInstructionsSHA256 != productionimage.ManagedSkillSHA256 {
+		t.Fatalf("instruction upgrade not propagated to signed run authority: %v", err)
+	}
+}
+
+func TestKubernetesReleasePreservesRepositoryStorage(t *testing.T) {
+	d := kubernetesConfigDocument()
+	d.Managed.Kubernetes.RepositoryStorageClass = "longhorn"
+	d.Managed.Kubernetes.RepositoryStorageSize = "10Gi"
+	base, err := ValidateConfig(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := KubernetesRelease{ServiceImage: d.Images.Service, HarnessImage: d.Images.Harness, RuntimeImage: d.Images.ManagedSandbox, GatewayImage: d.Managed.Kubernetes.GatewayImage, EnvironmentID: d.Managed.Environment.EnvironmentID, APICIDR: "10.251.224.59/32"}
+	next, err := PrepareKubernetesRelease(base, release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Document.Managed.Kubernetes.RepositoryStorageClass != "longhorn" || next.Document.Managed.Kubernetes.RepositoryStorageSize != "10Gi" {
+		t.Fatal("release dropped persistent repository configuration")
 	}
 }
 
@@ -196,6 +239,8 @@ func TestKubernetesProductionSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := kubernetesConfigDocument()
+	d.Managed.Kubernetes.RepositoryStorageClass = "longhorn"
+	d.Managed.Kubernetes.RepositoryStorageSize = "10Gi"
 	raw, err = json.Marshal(d)
 	if err != nil {
 		t.Fatal(err)

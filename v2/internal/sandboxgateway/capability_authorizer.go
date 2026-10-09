@@ -55,7 +55,7 @@ func (authorizer *CapabilityAuthorizer) Authorize(request *http.Request, action 
 
 func lifecycleAction(action string) bool {
 	switch action {
-	case ActionEnsure, ActionGet, ActionRenewActivity, ActionReleaseActivity, ActionSetTimeout, ActionDelete:
+	case ActionEnsure, ActionGet, ActionRenewActivity, ActionReleaseActivity, ActionSetTimeout, ActionDelete, ActionPrepareRepository:
 		return true
 	default:
 		return false
@@ -69,7 +69,7 @@ func actionMethod(action string) string {
 	case ActionDelete:
 		return http.MethodDelete
 	case ActionEnsure, ActionRenewActivity, ActionReleaseActivity, ActionSetTimeout,
-		ActionRunCommand, ActionSignalCommand, ActionReadFile:
+		ActionRunCommand, ActionSignalCommand, ActionReadFile, ActionPrepareRepository:
 		return http.MethodPost
 	default:
 		return ""

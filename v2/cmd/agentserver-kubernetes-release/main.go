@@ -17,6 +17,7 @@ func main() {
 	flag.StringVar(&release.ServiceImage, "service-image", "", "published service image")
 	flag.StringVar(&release.HarnessImage, "harness-image", "", "published harness image with the selected stock runtime bundle")
 	flag.BoolVar(&release.UpgradeCodex, "upgrade-codex", false, "explicitly upgrade the previous runtime metadata to the current packaged Codex release")
+	flag.BoolVar(&release.UpgradeManagedSkill, "upgrade-managed-skill", false, "select current managed instructions only when the harness was rebuilt with this source")
 	flag.StringVar(&release.CNGatewayURL, "cn-gateway-url", "https://"+productiondeploy.ProductionCNSandboxGatewayHostname, "CN external sandbox gateway HTTPS origin")
 	flag.StringVar(&release.CNGatewayServerName, "cn-gateway-server-name", productiondeploy.ProductionCNSandboxGatewayBackendHost, "CN sandbox gateway backend TLS server name")
 	flag.StringVar(&release.CNEnvironmentID, "cn-environment-id", "73cd7602-c0be-4d9a-96a9-d0c09bf6f689", "CN Kubernetes managed environment UUID")

@@ -2,8 +2,11 @@ package coredb
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/agentserver/agentserver/v2/internal/workspacerepository"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -30,7 +33,16 @@ func (s *StateStore) readWorkspaceBindingEnvironment(
 	ctx context.Context,
 	transaction pgx.Tx,
 	operation, workspaceID, environmentID string,
+	repositories ...*workspacerepository.Binding,
 ) (workspaceBindingEnvironment, error) {
+	managedRepository := false
+	if len(repositories) > 0 && repositories[0] != nil {
+		repository := repositories[0]
+		if repository.Validate() != nil || repository.EnvironmentID != environmentID || s.managedProfilesByRegion[repository.Region] != environmentID {
+			return workspaceBindingEnvironment{}, commandError(ErrorInvalidState, operation, "environment", environmentID, "repository environment is not an installed profile")
+		}
+		managedRepository = true
+	}
 	lookup := fmt.Sprintf(`
 SELECT executor_id::text
 FROM %s
@@ -49,10 +61,10 @@ WHERE id = $1`, s.table("executor_environments"))
 	executorQuery := fmt.Sprintf(`
 SELECT status
 FROM %s
-WHERE id = $1 AND workspace_id = $2
+WHERE id = $1 AND (workspace_id = $2 OR $3)
 FOR SHARE`, s.table("executors"))
 	var executorStatus string
-	if err := transaction.QueryRow(ctx, executorQuery, executorID, workspaceID).Scan(&executorStatus); err != nil {
+	if err := transaction.QueryRow(ctx, executorQuery, executorID, workspaceID, managedRepository).Scan(&executorStatus); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return workspaceBindingEnvironment{}, commandError(ErrorNotFound, operation, "environment", environmentID, "environment is not registered in this workspace")
 		}
@@ -76,9 +88,22 @@ FOR SHARE`, s.table("executor_environments"))
 	}
 	switch environment.BackendKind {
 	case DispatchTargetAgentX:
+		if managedRepository {
+			return workspaceBindingEnvironment{}, commandError(ErrorInvalidState, operation, "environment", environmentID, "managed repository requires a Kubernetes environment")
+		}
 		// AgentX projects the run-frozen filesystem authority into the pinned
-		// Codex exec-server sandbox. It is the only backend currently qualified
-		// to carry a user-selected working tree.
+		// Codex exec-server sandbox. Generic user-selected environments use this
+		// path; managed repositories take the separate Kubernetes branch below.
+	case DispatchTargetKubernetes:
+		if !managedRepository {
+			return workspaceBindingEnvironment{}, commandError(ErrorInvalidState, operation, "environment", environmentID, "Kubernetes working directory requires a session repository binding")
+		}
+		var descriptor struct {
+			Root string `json:"root"`
+		}
+		if validateManagedRootDescriptor(environment.RootDescriptor) != nil || json.Unmarshal(environment.RootDescriptor, &descriptor) != nil || descriptor.Root != "/workspace" {
+			return workspaceBindingEnvironment{}, commandError(ErrorInvalidState, operation, "environment", environmentID, "repository runtime requires the qualified /workspace projection")
+		}
 	case DispatchTargetTAE:
 		// The documented TAE Terminal process API has no per-process
 		// filesystem-access field. Keep the fixed managed-CLI environment

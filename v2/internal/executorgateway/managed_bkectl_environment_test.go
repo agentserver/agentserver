@@ -142,6 +142,7 @@ func testBkectlProcessCredential(t *testing.T, kind executionbackend.Kind) {
 		{"bytesd", "node", "block", "--ip", "10.0.0.1"},
 		{"k8s", "pod", "get", "--debug"},
 		{"future", "command", "get"},
+		{"--confirm-write", "k8s", "node", "shell", "--command", "df -h | jq -R ."},
 	} {
 		request.Arguments = arguments
 		environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request)
@@ -153,7 +154,7 @@ func testBkectlProcessCredential(t *testing.T, kind executionbackend.Kind) {
 
 	request.Arguments = []string{"--region", "cn", "auth", "get", "jwt", "--json"}
 	if environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request); err == nil || len(environment) != 0 ||
-		authorityCalls != 4 || credentialCalls != 4 {
+		authorityCalls != 5 || credentialCalls != 5 {
 		t.Fatalf("credential disclosure received environment: %#v, %v / %d/%d", environment, err, authorityCalls, credentialCalls)
 	}
 }

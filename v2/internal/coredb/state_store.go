@@ -18,10 +18,11 @@ type TransactionDatabase interface {
 // StateStore is the only PostgreSQL write boundary for Phase 1 run and
 // execution state.
 type StateStore struct {
-	database             TransactionDatabase
-	schema               string
-	managedDefaultRegion string
-	managedProfileIDs    []string
+	database                TransactionDatabase
+	schema                  string
+	managedDefaultRegion    string
+	managedProfileIDs       []string
+	managedProfilesByRegion map[string]string
 }
 
 // WithManagedSandboxCatalog configures deployment-owned shared profile IDs,
@@ -31,13 +32,16 @@ func (s *StateStore) WithManagedSandboxCatalog(catalog *managedsandboxprofile.Ca
 	copy := *s
 	copy.managedDefaultRegion = ""
 	copy.managedProfileIDs = nil
+	copy.managedProfilesByRegion = nil
 	if catalog != nil {
+		copy.managedProfilesByRegion = make(map[string]string)
 		copy.managedDefaultRegion = catalog.DefaultRegion()
 		for _, binding := range catalog.Bindings() {
 			// Every deployment-owned profile is a valid shared Kubernetes/TAE
 			// environment. Keep the complete catalog here so a workspace that
 			// selects CN can reserve its CN environment just like SG.
 			copy.managedProfileIDs = append(copy.managedProfileIDs, binding.EnvironmentID)
+			copy.managedProfilesByRegion[binding.Region] = binding.EnvironmentID
 		}
 	}
 	return &copy

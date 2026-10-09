@@ -14,6 +14,44 @@ import (
 
 const ProfileV1 = "e2b-semantic-subset/v1"
 
+type RepositoryCredential struct {
+	Username string `json:"username"`
+	Token    string `json:"token"`
+}
+type RepositorySource struct {
+	URL                 string `json:"url"`
+	Ref                 string `json:"ref"`
+	WorkingDirectory    string `json:"workingDirectory"`
+	CredentialBindingID string `json:"credentialBindingId,omitempty"`
+}
+type PrepareRepositoryRequest struct {
+	Profile    string                `json:"profile"`
+	Session    SessionIdentity       `json:"session"`
+	Ref        SandboxRef            `json:"ref"`
+	CheckoutID string                `json:"checkoutId"`
+	Source     RepositorySource      `json:"source"`
+	Credential *RepositoryCredential `json:"credential,omitempty"`
+}
+type RepositoryContext struct {
+	Version          int    `json:"version"`
+	WorkingDirectory string `json:"workingDirectory"`
+	Instructions     []struct {
+		Path string `json:"path"`
+		Text string `json:"text"`
+	} `json:"instructions"`
+	Skills []struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Path        string `json:"path"`
+	} `json:"skills"`
+}
+type PrepareRepositoryResponse struct {
+	CheckoutID string            `json:"checkoutId"`
+	Commit     string            `json:"commit"`
+	Created    bool              `json:"created"`
+	Context    RepositoryContext `json:"context"`
+}
+
 var (
 	contractIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 	executablePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,255}$`)

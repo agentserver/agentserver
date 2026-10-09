@@ -15,15 +15,16 @@ const (
 )
 
 const (
-	ActionEnsure          = "ensure"
-	ActionGet             = "get"
-	ActionRenewActivity   = "renew_activity"
-	ActionReleaseActivity = "release_activity"
-	ActionSetTimeout      = "set_timeout"
-	ActionDelete          = "delete"
-	ActionRunCommand      = "run_command"
-	ActionSignalCommand   = "signal_command"
-	ActionReadFile        = "read_file"
+	ActionEnsure            = "ensure"
+	ActionGet               = "get"
+	ActionRenewActivity     = "renew_activity"
+	ActionReleaseActivity   = "release_activity"
+	ActionSetTimeout        = "set_timeout"
+	ActionDelete            = "delete"
+	ActionRunCommand        = "run_command"
+	ActionSignalCommand     = "signal_command"
+	ActionReadFile          = "read_file"
+	ActionPrepareRepository = "prepare_repository"
 )
 
 // Principal is the already-verified capability binding. Lifecycle principals

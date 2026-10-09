@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -14,9 +15,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
+	"github.com/agentserver/agentserver/v2/internal/repositorycheckout"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcapability"
 	"github.com/agentserver/agentserver/v2/internal/sandboxclient"
 )
@@ -190,6 +193,18 @@ func configureProfiledTAEExecution(
 		if clientErr != nil {
 			closeClients()
 			return nil, nil, nil, nil, nil, clientErr
+		}
+		if credentialClient, ok := coreAuthorities.(executorgateway.RepositoryCredentialClient); ok {
+			acquirer.SetRepositoryCredentialResolver(func(ctx context.Context, principal executorgateway.ExecutorMCPPrincipal, bindingID string) (*repositorycheckout.Credential, error) {
+				response, err := credentialClient.ResolveRepositoryCredential(ctx, corecontract.ResolveRepositoryCredentialRequest{Operation: corecontract.EgressCredentialOperation{WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID, ActorID: principal.ActorID, EnvironmentID: principal.Workspace.EnvironmentID, RunID: principal.Run.RunID, RunAttemptID: principal.Run.RunAttemptID, RunAttemptGeneration: principal.Run.RunAttemptGeneration}, BindingID: bindingID, EnvironmentID: principal.Workspace.EnvironmentID, RunID: principal.Run.RunID, RunAttemptID: principal.Run.RunAttemptID})
+				if err != nil {
+					return nil, err
+				}
+				if !response.Configured {
+					return nil, errors.New("repository Git credential is not configured")
+				}
+				return &repositorycheckout.Credential{Username: response.Username, Token: response.Token}, nil
+			})
 		}
 		backendByEnvironment[profile.binding.EnvironmentID] = backend
 		fencerByRegion[profile.binding.Region] = fencer

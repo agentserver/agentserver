@@ -30,6 +30,7 @@ import (
 // operation-bound materialization.
 type EgressCredentialService struct {
 	resolver                 *corecredentials.Service
+	sealer                   *corecredentials.Keyring
 	store                    EgressCredentialStore
 	processProofs            *egresscapability.Verifier
 	processEnvironmentTAEPSM string
@@ -157,6 +158,43 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 	}, nil
 }
 
+func (service *EgressCredentialService) ResolveRepositoryCredential(ctx context.Context, request corecontract.ResolveRepositoryCredentialRequest) (corecontract.ResolveRepositoryCredentialResponse, error) {
+	if service == nil || service.store == nil || service.resolver == nil || service.sealer == nil {
+		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential resolver unavailable")
+	}
+	if request.BindingID == "" || request.Operation.WorkspaceID == "" || request.Operation.SessionID == "" || request.EnvironmentID == "" {
+		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential request is incomplete")
+	}
+	if authorizer, ok := service.store.(interface {
+		AuthorizeRepositoryCredential(context.Context, corecontract.ResolveRepositoryCredentialRequest) error
+	}); !ok {
+		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential authorization is unavailable")
+	} else if err := authorizer.AuthorizeRepositoryCredential(ctx, request); err != nil {
+		return corecontract.ResolveRepositoryCredentialResponse{}, err
+	}
+	binding, err := service.store.Get(ctx, request.Operation.WorkspaceID, "git", request.BindingID)
+	if err != nil {
+		return corecontract.ResolveRepositoryCredentialResponse{}, err
+	}
+	if binding.Status != corecredentials.StatusActive || binding.OwnerScope != corecredentials.OwnerScopeWorkspace {
+		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential is not active")
+	}
+	secret, err := service.sealer.Open(corecredentials.BindingSealScope{WorkspaceID: binding.WorkspaceID, BindingID: binding.ID, CredentialVersion: binding.CredentialVersion}, binding.SealedSecret)
+	if err != nil {
+		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential is unavailable")
+	}
+	defer clear(secret)
+	provider, ok := service.resolver.Registry().Lookup("git")
+	if !ok {
+		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("git provider unavailable")
+	}
+	mutation, err := provider.Materialize(ctx, binding, secret, corecredentials.UseRequest{ProviderKind: "git", BindingID: binding.ID, WorkspaceID: binding.WorkspaceID, SessionID: request.Operation.SessionID, EnvironmentID: request.EnvironmentID, Host: "code.byted.org", Method: "PROCESS_ENV"})
+	if err != nil {
+		return corecontract.ResolveRepositoryCredentialResponse{}, errors.New("repository credential denied")
+	}
+	return corecontract.ResolveRepositoryCredentialResponse{Configured: true, Username: mutation.Environment["AGENTSERVER_GIT_USERNAME"], Token: mutation.Environment["AGENTSERVER_GIT_TOKEN"]}, nil
+}
+
 func NewEgressCredentialService(config EgressCredentialServiceConfig) (*EgressCredentialService, error) {
 	if config.ProcessEnvironmentScopes != nil && config.Placeholders != nil {
 		return nil, errors.New("Kubernetes credential scope bindings cannot enable webhook delivery")
@@ -175,7 +213,7 @@ func NewEgressCredentialService(config EgressCredentialServiceConfig) (*EgressCr
 		return nil, err
 	}
 	return &EgressCredentialService{
-		resolver: resolver, store: config.Store, processProofs: config.ProcessProofs,
+		resolver: resolver, sealer: config.Sealer, store: config.Store, processProofs: config.ProcessProofs,
 		processEnvironmentTAEPSM: config.ProcessEnvironmentTAEPSM,
 		processEnvironmentScopes: config.ProcessEnvironmentScopes,
 		credentialRefresher:      config.CredentialRefresher,

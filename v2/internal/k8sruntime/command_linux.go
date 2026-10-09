@@ -54,7 +54,11 @@ func sandboxArguments(c Config, r sandboxcontract.RunCommandRequest) ([]string, 
 	}
 	// Resolve the cwd through Root now; bubblewrap remounts that same workspace
 	// root and makes all other paths immutable/unreachable in the child.
-	root, err := os.OpenRoot(c.Workspace)
+	workspaceSource := c.Workspace
+	if c.repositoryTree != "" {
+		workspaceSource = c.repositoryTree
+	}
+	root, err := os.OpenRoot(workspaceSource)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +91,7 @@ func sandboxArguments(c Config, r sandboxcontract.RunCommandRequest) ([]string, 
 	if r.WorkspaceAccess == "read" {
 		bind = "--ro-bind"
 	}
-	args = append(args, bind, c.Workspace, c.Workspace, "--chdir", r.WorkingDirectory,
+	args = append(args, bind, workspaceSource, c.Workspace, "--chdir", r.WorkingDirectory,
 		"--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", "/tmp/home", "--setenv", "TMPDIR", "/tmp", "--setenv", "LANG", "C.UTF-8")
 	// ByteCloud/bkectl needs the internal egress route. Lark's public CDN must
 	// remain direct: routing open.feishu.cn through that internal SOCKS tunnel

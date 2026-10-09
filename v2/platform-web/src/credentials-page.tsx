@@ -32,7 +32,7 @@ import {
   persistCredentialAuthorization,
   restoreCredentialAuthorization,
 } from "./credential-flow"
-import { ByteCloudCredentialDialog } from "./manual-credential-dialog"
+import { ByteCloudCredentialDialog, GitCredentialDialog } from "./manual-credential-dialog"
 
 export function CredentialsPage({ workspace, api }: { workspace: Workspace; api: ResourceAPI }) {
   const { t } = useTranslation()
@@ -162,7 +162,7 @@ export function CredentialsPage({ workspace, api }: { workspace: Workspace; api:
       loading ? <CredentialSkeleton /> : providers.length === 0 ? <EmptyState icon={<KeyRound size={20} />} title={t("credentials.noProviders")} /> :
       <div className="credential-provider-list">{providers.map((provider) => <Card className="credential-provider" key={provider.kind}>
         <div className="credential-provider-header"><div className="credential-provider-title"><span className="credential-provider-mark"><KeyRound size={17} /></span><div><h2>{provider.displayName}</h2><p>{provider.kind} · {provider.allowedHosts.join(", ")}</p></div></div>
-          {provider.kind === "bytecloud" && provider.authTypes.includes("aksk") && provider.authorizationMethods.includes("manual") ? <ByteCloudCredentialDialog api={api} workspaceId={workspace.workspaceId} onCreated={load} /> : provider.authorizationMethods.includes("device_flow") ? <ConnectCredentialDialog provider={provider} disabled={authorization?.status === "pending"} onBegin={begin} /> : <Badge>{t("credentials.manualOnly")}</Badge>}
+          {provider.kind === "git" && provider.authTypes.includes("https-token") && provider.authorizationMethods.includes("manual") ? <GitCredentialDialog api={api} workspaceId={workspace.workspaceId} onCreated={load} /> : provider.kind === "bytecloud" && provider.authTypes.includes("aksk") && provider.authorizationMethods.includes("manual") ? <ByteCloudCredentialDialog api={api} workspaceId={workspace.workspaceId} onCreated={load} /> : provider.authorizationMethods.includes("device_flow") ? <ConnectCredentialDialog provider={provider} disabled={authorization?.status === "pending"} onBegin={begin} /> : <Badge>{t("credentials.manualOnly")}</Badge>}
         </div>
         <div className="credential-provider-meta"><Badge tone="info">{provider.kind === "bytecloud" ? "AK/SK" : provider.authorizationMethods.includes("device_flow") ? t("credentials.deviceFlow") : t("credentials.manual")}</Badge><span>{t("credentials.bindingCount", { count: bindings[provider.kind]?.length ?? 0 })}</span></div>
         {(bindings[provider.kind]?.length ?? 0) === 0 ? <div className="credential-empty">{t("credentials.emptyProvider", { provider: provider.displayName })}</div> : <div className="credential-binding-list">{(bindings[provider.kind] ?? []).map((binding) => <div className="credential-binding" key={binding.id}>

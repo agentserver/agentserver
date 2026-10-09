@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 )
 
 type ProviderSandboxState string
@@ -96,6 +97,14 @@ type SignalProcessProviderRequest struct {
 type ReadFileProviderRequest struct {
 	SessionRef string
 	Request    executionbackend.ReadFileRequest
+}
+
+type PrepareRepositoryProviderRequest struct {
+	SessionRef string
+	Request    sandboxcontract.PrepareRepositoryRequest
+}
+type RepositoryProvider interface {
+	PrepareRepository(context.Context, PrepareRepositoryProviderRequest) (sandboxcontract.PrepareRepositoryResponse, error)
 }
 
 type Provider interface {

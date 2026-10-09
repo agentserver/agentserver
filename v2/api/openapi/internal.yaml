@@ -566,6 +566,20 @@
         }
       }
     },
+    "/internal/v2/repository/credentials:resolve": {
+      "post": {
+        "operationId": "resolveRepositoryCredential",
+        "description": "Executor-gateway-only Git credential delivery for a frozen session repository preparation. Core verifies the active run and session repository binding before opening the sealed credential.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveRepositoryCredentialRequest"}}}},
+        "responses": {
+          "200": {"description": "Short-lived Git credential material for repository preparation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveRepositoryCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"},
+          "503": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/egress/credential-use-events": {
       "post": {
         "operationId": "recordEgressCredentialAuditEvent",
@@ -1498,6 +1512,8 @@
         "additionalProperties": false,
         "required": ["environmentId", "environmentVersion", "rootSha256", "workingDirectory", "workingDirectoryVersion"],
         "properties": {
+          "repositoryId": {"$ref": "#/components/schemas/UUID"},
+          "repository": {"type":"object","additionalProperties":false,"required":["checkoutId","source","sourceVersion","region","environmentId","managedSettingVersion"],"properties":{"checkoutId":{"$ref":"#/components/schemas/UUID"},"source":{"type":"object","additionalProperties":false,"required":["url","ref","workingDirectory"],"properties":{"url":{"type":"string"},"ref":{"type":"string"},"workingDirectory":{"type":"string"},"credentialBindingId":{"$ref":"#/components/schemas/UUID"}}},"sourceVersion":{"type":"integer"},"region":{"enum":["cn","sg"]},"environmentId":{"$ref":"#/components/schemas/UUID"},"managedSettingVersion":{"type":"integer"}}},
           "environmentId": {"$ref": "#/components/schemas/UUID"},
           "environmentVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "rootSha256": {"$ref": "#/components/schemas/SHA256"},
@@ -2201,6 +2217,8 @@
           "accessExpiresAt": {"type": "string", "format": "date-time"}
         }
       },
+      "ResolveRepositoryCredentialRequest": {"type":"object","additionalProperties":false,"required":["operation","bindingId","environmentId","runId","runAttemptId"],"properties":{"operation":{"$ref":"#/components/schemas/EgressCredentialOperation"},"bindingId":{"$ref":"#/components/schemas/UUID"},"environmentId":{"$ref":"#/components/schemas/UUID"},"runId":{"$ref":"#/components/schemas/UUID"},"runAttemptId":{"$ref":"#/components/schemas/UUID"}}},
+      "ResolveRepositoryCredentialResponse": {"type":"object","additionalProperties":false,"required":["configured"],"properties":{"configured":{"type":"boolean"},"username":{"type":"string","maxLength":256,"x-agentserver-sensitive":true},"token":{"type":"string","maxLength":8192,"x-agentserver-sensitive":true}}},
       "AuthorizeProcessEnvironmentEgressRequest": {
         "type": "object",
         "additionalProperties": false,

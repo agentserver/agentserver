@@ -164,6 +164,24 @@ func TestRuntimeRejectsUnauthenticatedAndCrossSession(t *testing.T) {
 	}
 }
 
+func TestRuntimeAllowsCredentialFreeShellPipelines(t *testing.T) {
+	s := testServer(t)
+	request := testCommand(s)
+	request.Arguments = []string{"-c", "printf managed-cli | tr a-z A-Z"}
+	path, _ := sandboxcontract.RunCommandPath(request.Ref.SandboxID)
+	result := frames(t, call(t, s, http.MethodPost, path, request, true))
+	var stdout strings.Builder
+	for _, frame := range result {
+		if frame.Event != nil && frame.Event.Kind == executionbackend.EventStdout {
+			stdout.Write(frame.Event.Data)
+		}
+	}
+	terminal := result[len(result)-1].Terminal
+	if terminal.Status != executionbackend.TerminalSucceeded || stdout.String() != "MANAGED-CLI" {
+		t.Fatalf("pipeline = %q, terminal=%+v", stdout.String(), terminal)
+	}
+}
+
 func TestRuntimeRejectsStaleBootAndRequestShape(t *testing.T) {
 	s := testServer(t)
 	cmd := testCommand(s)

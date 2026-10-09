@@ -47,9 +47,7 @@ cp "$bkectl_binary" "$output_directory/runtime/bkectl"
 cp "$lark_binary" "$output_directory/runtime/lark-cli"
 cp "$bwrap_binary" "$output_directory/runtime/bwrap"
 cp -R "$bkectl_skills/." "$output_directory/runtime/packs/bkectl/"
-mkdir -p "$output_directory/runtime/packs/managed-cli-readonly" "$output_directory/runtime/packs/lark-readonly"
-cp "$repo_root/deploy/production/managed-cli-readonly.SKILL.md" "$output_directory/runtime/packs/managed-cli-readonly/SKILL.md"
-cp "$repo_root/deploy/production/lark-readonly.SKILL.md" "$output_directory/runtime/packs/lark-readonly/SKILL.md"
+bash "$repo_root/deploy/production/prepare-managed-instructions.sh" "$output_directory/runtime/packs"
 chmod 0555 "$output_directory/runtime/agentserver-k8s-runtime" "$output_directory/runtime/bwrap" "$output_directory/runtime/bkectl" "$output_directory/runtime/lark-cli" "$output_directory/gateway/sandbox-gateway-k8s"
 
 if [ "$engine" = docker ]; then

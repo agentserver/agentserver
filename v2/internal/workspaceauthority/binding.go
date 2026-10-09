@@ -14,6 +14,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/agentserver/agentserver/v2/internal/workspacerepository"
 )
 
 const (
@@ -34,6 +36,10 @@ type Binding struct {
 	RootSHA256              [sha256.Size]byte
 	WorkingDirectory        string
 	WorkingDirectoryVersion int64
+	// RepositoryID identifies an immutable managed session checkout. Empty is
+	// the existing AgentX directory-binding profile.
+	RepositoryID string
+	Repository   *workspacerepository.Binding
 }
 
 func (binding Binding) IsZero() bool {
@@ -41,6 +47,17 @@ func (binding Binding) IsZero() bool {
 }
 
 func (binding Binding) Validate() error {
+	if binding.RepositoryID != "" && !validUUID(binding.RepositoryID) {
+		return errors.New("workspace repository ID must be a non-zero canonical UUID")
+	}
+	if binding.Repository != nil {
+		if err := binding.Repository.Validate(); err != nil {
+			return err
+		}
+		if binding.Repository.CheckoutID != binding.RepositoryID || binding.Repository.EnvironmentID != binding.EnvironmentID {
+			return errors.New("workspace repository binding does not match workspace authority")
+		}
+	}
 	if !validUUID(binding.EnvironmentID) {
 		return errors.New("workspace environment ID must be a non-zero canonical lowercase UUID")
 	}

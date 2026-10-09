@@ -219,6 +219,7 @@ func platformGatewayRoutes(
 	platformMux.Handle(corecontract.WorkspaceResourceRoutePattern, resources)
 	platformMux.Handle(corecontract.WorkspaceArchiveRoutePattern, resources)
 	platformMux.Handle(corecontract.WorkspaceManagedSandboxRoutePattern, resources)
+	platformMux.Handle(corecontract.WorkspaceRepositoryRoutePattern, resources)
 	platformMux.Handle(corecontract.WorkspaceMembersCollectionPattern, resources)
 	platformMux.Handle(corecontract.WorkspaceMemberResourceRoutePattern, resources)
 	platformMux.Handle(corecontract.WorkspaceCredentialProviderSchemasPath, credentials)

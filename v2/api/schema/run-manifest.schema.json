@@ -87,7 +87,9 @@
         "environmentVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
         "rootSha256": {"$ref": "#/$defs/sha256"},
         "workingDirectory": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?:\\.|(?:[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f-\\x9f]+)(?:/(?:[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f-\\x9f]+))*)$"},
-        "workingDirectoryVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        "workingDirectoryVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "repositoryId": {"$ref": "#/$defs/uuid"},
+        "repository": {"type":"object","additionalProperties":false,"required":["checkoutId","source","sourceVersion","region","environmentId","managedSettingVersion"],"properties":{"checkoutId":{"$ref":"#/$defs/uuid"},"source":{"type":"object","additionalProperties":false,"required":["url","ref","workingDirectory"],"properties":{"url":{"type":"string"},"ref":{"type":"string"},"workingDirectory":{"type":"string"},"credentialBindingId":{"$ref":"#/$defs/uuid"}}},"sourceVersion":{"type":"integer","minimum":1},"region":{"enum":["cn","sg"]},"environmentId":{"$ref":"#/$defs/uuid"},"managedSettingVersion":{"type":"integer","minimum":1}}}
       }
     },
     "modelRoute": {

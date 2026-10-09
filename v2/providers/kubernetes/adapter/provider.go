@@ -13,8 +13,10 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/k8sruntime"
+	"github.com/agentserver/agentserver/v2/internal/repositorycheckout"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
+	"github.com/agentserver/agentserver/v2/internal/workspacerepository"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -43,13 +45,15 @@ const (
 // The pool points at an immutable template revision. RuntimeClass belongs in
 // that template; an omitted runtimeClassName uses the cluster default.
 type Config struct {
-	Namespace     string
-	Pool          string
-	Region        string
-	Scope         string
-	ClusterDomain string
-	RuntimePort   int
-	Now           func() time.Time
+	Namespace              string
+	Pool                   string
+	Region                 string
+	Scope                  string
+	ClusterDomain          string
+	RuntimePort            int
+	Now                    func() time.Time
+	RepositoryStorageClass string
+	RepositoryStorageSize  string
 }
 
 // Endpoint is resolved from authoritative CR/Pod ownership, not caller URLs or
@@ -72,6 +76,9 @@ type RuntimeClient interface {
 	StartProcess(context.Context, Endpoint, executionbackend.StartProcessRequest) (executionbackend.Exchange, error)
 	SignalProcess(context.Context, Endpoint, executionbackend.SignalProcessRequest) (executionbackend.Exchange, error)
 	ReadFile(context.Context, Endpoint, executionbackend.ReadFileRequest) (executionbackend.Exchange, error)
+}
+type RepositoryRuntimeClient interface {
+	PrepareRepository(context.Context, Endpoint, k8sruntime.PrepareRepositoryRequest) (k8sruntime.RepositoryState, error)
 }
 
 type Provider struct {
@@ -114,6 +121,9 @@ func New(kube dynamic.Interface, runtime RuntimeClient, config Config) (*Provide
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if err := validateRepositoryStorageConfig(config); err != nil {
+		return nil, err
+	}
 	return &Provider{kube: kube, runtime: runtime, config: config}, nil
 }
 
@@ -151,14 +161,37 @@ func (p *Provider) CreateSandbox(ctx context.Context, r sandboxgateway.CreateSan
 	if r.SessionRef != "" || !ttlValid(r.TTL) {
 		return sandboxgateway.ProviderSandbox{}, failure("invalid_create_request", false)
 	}
+	// Resolve a pre-existing identity before provisioning durable resources.
+	// Repeated create must not allocate another session's storage on a claim
+	// name collision, nor require a template read to observe an existing claim.
+	if existing, lookupErr := p.resource(Claims).Get(ctx, "as-"+i.SandboxID, metav1.GetOptions{}); lookupErr == nil {
+		if err := p.matchIdentity(existing, i); err != nil {
+			return sandboxgateway.ProviderSandbox{}, err
+		}
+		return p.observe(ctx, existing)
+	} else if !apierrors.IsNotFound(lookupErr) {
+		return sandboxgateway.ProviderSandbox{}, apiFailure(lookupErr, "create_lookup", true)
+	}
 	encoded, _ := json.Marshal(i)
+	pool := p.config.Pool
+	if p.config.RepositoryStorageClass != "" {
+		pool, err = p.ensureRepositoryPool(ctx, i)
+		if err != nil {
+			return sandboxgateway.ProviderSandbox{}, err
+		}
+	}
 	claim := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": Claims.GroupVersion().String(), "kind": "SandboxClaim",
 		"metadata": map[string]any{"name": "as-" + i.SandboxID, "namespace": p.config.Namespace,
 			"labels": map[string]any{managedLabel: managedValue}, "annotations": map[string]any{identityAnnotation: string(encoded)}},
-		"spec": map[string]any{"warmPoolRef": map[string]any{"name": p.config.Pool},
+		"spec": map[string]any{"warmPoolRef": map[string]any{"name": pool},
 			"lifecycle": map[string]any{"shutdownTime": p.config.Now().UTC().Add(r.TTL).Format(time.RFC3339), "shutdownPolicy": "DeleteForeground"}},
 	}}
+	if pool != p.config.Pool {
+		annotations := claim.GetAnnotations()
+		annotations[repositoryPoolAnnotation] = pool
+		claim.SetAnnotations(annotations)
+	}
 	created, err := p.resource(Claims).Create(ctx, claim, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		created, err = p.resource(Claims).Get(ctx, claim.GetName(), metav1.GetOptions{})
@@ -192,6 +225,47 @@ func (p *Provider) FindSandbox(ctx context.Context, r sandboxgateway.FindSandbox
 	return p.observe(ctx, claim)
 }
 
+func (p *Provider) PrepareRepository(ctx context.Context, request sandboxgateway.PrepareRepositoryProviderRequest) (sandboxcontract.PrepareRepositoryResponse, error) {
+	runtime, ok := p.runtime.(RepositoryRuntimeClient)
+	if !ok {
+		return sandboxcontract.PrepareRepositoryResponse{}, errors.New("runtime repository preparation is unavailable")
+	}
+	claim, err := p.load(ctx, request.SessionRef)
+	if err != nil {
+		return sandboxcontract.PrepareRepositoryResponse{}, err
+	}
+	endpoint, ready, err := p.endpoint(ctx, claim)
+	if err != nil || !ready {
+		if err != nil {
+			return sandboxcontract.PrepareRepositoryResponse{}, err
+		}
+		return sandboxcontract.PrepareRepositoryResponse{}, errors.New("sandbox runtime is not ready")
+	}
+	input := k8sruntime.PrepareRepositoryRequest{Session: request.Request.Session, Ref: request.Request.Ref, CheckoutID: request.Request.CheckoutID, Source: workspacerepository.Source{URL: request.Request.Source.URL, Ref: request.Request.Source.Ref, WorkingDirectory: request.Request.Source.WorkingDirectory, CredentialBindingID: request.Request.Source.CredentialBindingID}}
+	if request.Request.Credential != nil {
+		input.Credential = &repositorycheckout.Credential{Username: request.Request.Credential.Username, Token: request.Request.Credential.Token}
+	}
+	state, err := runtime.PrepareRepository(ctx, endpoint, input)
+	if err != nil {
+		return sandboxcontract.PrepareRepositoryResponse{}, err
+	}
+	repoCtx := sandboxcontract.RepositoryContext{Version: state.Context.Version, WorkingDirectory: state.Context.WorkingDirectory}
+	for _, item := range state.Context.Instructions {
+		repoCtx.Instructions = append(repoCtx.Instructions, struct {
+			Path string `json:"path"`
+			Text string `json:"text"`
+		}{Path: item.Path, Text: item.Text})
+	}
+	for _, item := range state.Context.Skills {
+		repoCtx.Skills = append(repoCtx.Skills, struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Path        string `json:"path"`
+		}{Name: item.Name, Description: item.Description, Path: item.Path})
+	}
+	return sandboxcontract.PrepareRepositoryResponse{CheckoutID: state.CheckoutID, Commit: state.Commit, Created: state.Created, Context: repoCtx}, nil
+}
+
 func (p *Provider) matchIdentity(claim *unstructured.Unstructured, expected createIdentity) error {
 	actual, err := p.readIdentity(claim)
 	if err != nil {
@@ -212,7 +286,17 @@ func (p *Provider) readIdentity(claim *unstructured.Unstructured) (createIdentit
 		return i, failure("claim_identity_mismatch", false)
 	}
 	pool, _, _ := unstructured.NestedString(claim.Object, "spec", "warmPoolRef", "name")
-	if pool != p.config.Pool {
+	expectedPool := p.config.Pool
+	if stored := claim.GetAnnotations()[repositoryPoolAnnotation]; stored != "" {
+		if p.config.RepositoryStorageClass == "" || !repositoryUUID.MatchString(i.SessionID) {
+			return i, failure("claim_repository_profile_mismatch", false)
+		}
+		expectedPool = p.repositoryPoolName(i.SessionID)
+		if stored != expectedPool {
+			return i, failure("claim_repository_profile_mismatch", false)
+		}
+	}
+	if pool != expectedPool {
 		return i, failure("claim_template_mismatch", false)
 	}
 	return i, nil

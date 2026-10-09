@@ -1,20 +1,22 @@
 ---
-name: managed-cli-readonly
-version: 1.0.0
-description: "Read Lark documents and ByteCloud/BKE infrastructure through the managed TAE command-line runtime."
+name: managed-cli
+description: "Use workspace-scoped bkectl credentials for infrastructure operations and managed shell tools for local processing."
 metadata:
   requires:
     bins: ["lark-cli", "bkectl"]
   cliHelp: "lark-cli skills read lark-doc references/lark-doc-fetch.md;bkectl --help"
 ---
 
-# Managed read-only command-line tools
+# Managed command-line tools
 
-The managed executor provides a workspace-scoped user identity only to an
-approved command. Invoke a CLI directly with an argv array. Never use `sh -c`,
-`bash -c`, pipelines, redirects, command substitution, another executable, or
-commands that inspect process environment, `/proc`, credential files, or local
-authentication state.
+The managed executor is not a read-only tool pack. Infrastructure operations
+follow the user's request, the session permission mode, and the CLI/downstream
+authorization decision. Do not invent an additional managed read-only policy.
+
+The executor's shell tool takes an argv array, not a shell command string.
+Credential-bearing CLIs receive workspace credentials only when invoked
+directly. Ordinary shell programs and local pipelines are also supported;
+they do not receive those credentials.
 
 ## Lark and Feishu documents
 
@@ -41,7 +43,7 @@ values.
 
 ## ByteCloud, BKE, Kubernetes, machines, quota, and SRE resources
 
-Use `bkectl` for read-only infrastructure inspection. Common domains include
+Use `bkectl` for infrastructure inspection and requested operations. Common domains include
 `bke`, `bytebox`, `bytepaas`, `bytesd`, `bytetree`, `collie`, `fatal`, `fault`,
 `gpu`, `idcmetadata`, `k8s`, `merlin`, `obs`, `oncall`, `pike`, `quota`,
 `resource`, `spacex`, `tao`, `tcc`, and `tck`.
@@ -52,10 +54,10 @@ first:
 ```text
 bkectl --help
 bkectl <domain> --help
-bkectl <domain> <resource> <read-command> --help
+bkectl <domain> <resource> <command> --help
 ```
 
-Then invoke one read-only leaf command directly. Prefer `--json` for structured
+Then invoke the selected command directly. Prefer `--json` for structured
 results and use `--region i18nbd` unless the user or command contract requires a
 different supported region. Typical shapes are:
 
@@ -65,16 +67,37 @@ bkectl bytebox host get <ip> --region i18nbd --json
 bkectl k8s pod get <required flags from --help> --region i18nbd --json
 ```
 
-Never run any `bkectl auth` command, including `auth get jwt`; the managed
-AK/SK application identity must not be converted into or printed as a JWT.
+`--confirm-write` is bkectl's own confirmation flag, not an AgentServer
+prohibition. When the requested operation requires it, confirm the intended
+target and operation under the current session policy and include the flag.
+This includes commands such as node shell that bkectl classifies as risky
+even when their intended payload only inspects the node. Pass a remote shell
+payload as the CLI's command argument; pipes inside that argument are not a
+managed-tool authorization error.
+
+Do not run `bkectl auth get jwt` or inspect credential files/process
+environment to retrieve workspace secrets. The managed AK/SK identity must
+not be converted into or printed as a JWT.
 The executor supplies `BKECTL_AUTH_MODE=app_only`,
 `BYTECLOUD_AUTH_ACCESS_KEY_ID`, and `BYTECLOUD_AUTH_SECRET_ACCESS_KEY` only to
-the exact bkectl process. Never run installation, login, logout, update, create,
-delete, mutate, repair, shell, exec, block, unblock, or another write/risky
-operation. Never add `--debug` or `--confirm-write`. AgentServer does not keep
-a bkectl command allowlist: bkectl and its downstream IAM/policy engines make
-the execution authorization decision.
+the exact bkectl process. AgentServer does not keep a bkectl business-command
+allowlist: bkectl and its downstream IAM/policy engines make the execution
+authorization decision. A permission error should be reported as the actual
+CLI/IAM error, not as a fictional read-only pack limitation.
 
-If a requested operation is outside these read-only capabilities, stop and
-explain that the managed pack does not support it. Do not try another network
-client or bypass the managed execution boundary.
+## Shell pipelines and JSON processing
+
+Use an explicit shell executable when local shell syntax is needed, for example
+`["sh", "-c", "printf '%s' '{\"ready\":true}' | jq '.ready'"]`.
+Use `jq` directly when a shell is unnecessary. Pipes, redirects, and local
+processing are not prohibited merely because the execution environment is managed.
+
+For a workflow such as `bkectl ... --json | jq ...`, invoke bkectl directly
+first, then filter the returned JSON with code-mode JavaScript or a separate
+`jq -n --argjson data <returned-json> <filter>` invocation. Do not silently
+drop the requested filtering. Wrapping an authenticated bkectl command in
+`sh -c` does not receive automatic workspace credentials; do not solve that by
+printing, copying, or globally exporting credentials into the shell.
+
+The document-only Lark guidance above is specific to that Lark profile; it is
+not a restriction on bkectl, local shell programs, or project workspace edits.

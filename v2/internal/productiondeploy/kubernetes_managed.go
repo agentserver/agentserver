@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,20 +19,22 @@ import (
 )
 
 type KubernetesSandboxDocument struct {
-	AllWorkspaces         bool                 `json:"allWorkspaces,omitempty"`
-	Namespace             string               `json:"namespace"`
-	Pool                  string               `json:"pool"`
-	Scope                 string               `json:"scope"`
-	GatewayImage          string               `json:"gatewayImage"`
-	RuntimeTLSSecret      string               `json:"runtimeTlsSecret"`
-	RuntimeServerName     string               `json:"runtimeServerName"`
-	RuntimeClassName      string               `json:"runtimeClassName,omitempty"`
-	BubblewrapProfile     bool                 `json:"bubblewrapProfile,omitempty"`
-	RuntimeProxyURL       string               `json:"runtimeProxyUrl,omitempty"`
-	UnrestrictedNetwork   bool                 `json:"unrestrictedNetwork,omitempty"`
-	APIServerEntityPolicy bool                 `json:"apiServerEntityPolicy,omitempty"`
-	APIEgress             []EgressRuleDocument `json:"apiEgress"`
-	RuntimeExternalEgress []EgressRuleDocument `json:"runtimeExternalEgress"`
+	AllWorkspaces          bool                 `json:"allWorkspaces,omitempty"`
+	Namespace              string               `json:"namespace"`
+	Pool                   string               `json:"pool"`
+	Scope                  string               `json:"scope"`
+	GatewayImage           string               `json:"gatewayImage"`
+	RuntimeTLSSecret       string               `json:"runtimeTlsSecret"`
+	RuntimeServerName      string               `json:"runtimeServerName"`
+	RuntimeClassName       string               `json:"runtimeClassName,omitempty"`
+	BubblewrapProfile      bool                 `json:"bubblewrapProfile,omitempty"`
+	RuntimeProxyURL        string               `json:"runtimeProxyUrl,omitempty"`
+	UnrestrictedNetwork    bool                 `json:"unrestrictedNetwork,omitempty"`
+	APIServerEntityPolicy  bool                 `json:"apiServerEntityPolicy,omitempty"`
+	APIEgress              []EgressRuleDocument `json:"apiEgress"`
+	RuntimeExternalEgress  []EgressRuleDocument `json:"runtimeExternalEgress"`
+	RepositoryStorageClass string               `json:"repositoryStorageClass,omitempty"`
+	RepositoryStorageSize  string               `json:"repositoryStorageSize,omitempty"`
 }
 
 func validateKubernetesManagedExecutor(m ManagedExecutorDocument, d ConfigDocument) (LoadedConfig, error) {
@@ -73,6 +76,11 @@ func validateKubernetesManagedExecutor(m ManagedExecutorDocument, d ConfigDocume
 		return LoadedConfig{}, errors.New("Kubernetes CLI profile requires Lark and bkectl")
 	}
 	k := *m.Kubernetes
+	if k.RepositoryStorageClass != "" || k.RepositoryStorageSize != "" {
+		if !dnsLabelPattern.MatchString(k.RepositoryStorageClass) || len(k.RepositoryStorageClass) > 63 || !regexp.MustCompile(`^[1-9][0-9]{0,5}(Mi|Gi|Ti)$`).MatchString(k.RepositoryStorageSize) {
+			return LoadedConfig{}, errors.New("Kubernetes repository storage requires a class and positive Mi/Gi/Ti size")
+		}
+	}
 	if k.RuntimeProxyURL != "" && k.RuntimeProxyURL != kubernetesRuntimeProxyURL(d.ClusterDomain) {
 		return LoadedConfig{}, errors.New("Kubernetes runtime proxy differs from the installed SG internal egress service")
 	}
@@ -224,7 +232,7 @@ func validExternalSandboxGatewayURL(raw string) bool {
 
 func kubernetesTemplateConfig(d ConfigDocument, p ManagedSandboxProfileDocument) kubernetesresources.Config {
 	k := d.Managed.Kubernetes
-	return kubernetesresources.Config{Namespace: k.Namespace, TemplateName: k.Pool, RuntimeImage: d.Images.ManagedSandbox, RuntimeTLSSecret: k.RuntimeTLSSecret, GatewayNamespace: d.Namespace, GatewayServiceAccount: p.Gateway.Component, GatewayComponent: p.Gateway.Component, GatewayIdentity: "spiffe://" + d.TrustDomain + "/ns/" + d.Namespace + "/sa/" + p.Gateway.Component, RuntimeClassName: k.RuntimeClassName, BubblewrapProfile: k.BubblewrapProfile, RuntimeProxyURL: k.RuntimeProxyURL, UnrestrictedNetwork: k.UnrestrictedNetwork}
+	return kubernetesresources.Config{Namespace: k.Namespace, TemplateName: k.Pool, RuntimeImage: d.Images.ManagedSandbox, RuntimeTLSSecret: k.RuntimeTLSSecret, GatewayNamespace: d.Namespace, GatewayServiceAccount: p.Gateway.Component, GatewayComponent: p.Gateway.Component, GatewayIdentity: "spiffe://" + d.TrustDomain + "/ns/" + d.Namespace + "/sa/" + p.Gateway.Component, RuntimeClassName: k.RuntimeClassName, BubblewrapProfile: k.BubblewrapProfile, RuntimeProxyURL: k.RuntimeProxyURL, UnrestrictedNetwork: k.UnrestrictedNetwork, RepositoryStorage: k.RepositoryStorageClass != ""}
 }
 
 func kubernetesRuntimeProxyURL(clusterDomain string) string {
@@ -276,6 +284,7 @@ func renderKubernetesGateway(c renderContext, p LoadedManagedSandboxProfile) (ku
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_CAPABILITY_KEYRING_FILE", serviceMaterialPath("sandbox-capability-keyring.json")),
 		valueEnvironment("AGENTSERVER_V2_RUNTIME_CA_FILE", serviceMaterialPath("runtime-ca.crt")), valueEnvironment("AGENTSERVER_V2_RUNTIME_CLIENT_CERT_FILE", serviceMaterialPath("runtime-client.crt")), valueEnvironment("AGENTSERVER_V2_RUNTIME_CLIENT_KEY_FILE", serviceMaterialPath("runtime-client.key")), valueEnvironment("AGENTSERVER_V2_RUNTIME_SERVER_NAME", k.RuntimeServerName),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_PROVIDER", "k8s"), valueEnvironment("AGENTSERVER_V2_SANDBOX_REGION", p.Document.Region), valueEnvironment("AGENTSERVER_V2_SANDBOX_SCOPE", kubernetesCredentialScope(d, p.Document.Region)), valueEnvironment("AGENTSERVER_V2_SANDBOX_NAMESPACE", k.Namespace), valueEnvironment("AGENTSERVER_V2_SANDBOX_POOL", k.Pool), valueEnvironment("AGENTSERVER_V2_CLUSTER_DOMAIN", d.ClusterDomain),
+		valueEnvironment("AGENTSERVER_V2_REPOSITORY_STORAGE_CLASS", k.RepositoryStorageClass), valueEnvironment("AGENTSERVER_V2_REPOSITORY_STORAGE_SIZE", k.RepositoryStorageSize),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_EXTERNAL_TLS", strconv.FormatBool(g.External)),
 		valueEnvironment("AGENTSERVER_V2_MANAGED_IDLE_TTL", p.Document.Environment.IdleTTL), valueEnvironment("AGENTSERVER_V2_MANAGED_WORKSPACE_ALLOWLIST", workspaceAllowlist), valueEnvironment("AGENTSERVER_V2_SANDBOX_ENSURE_TIMEOUT", "3m"), valueEnvironment("AGENTSERVER_V2_SANDBOX_ENSURE_POLL_INTERVAL", "1s"),
 	}

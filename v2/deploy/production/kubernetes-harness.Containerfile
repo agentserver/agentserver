@@ -7,6 +7,8 @@ ARG SOURCE_REVISION
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 COPY --chmod=0555 bin/ /usr/local/bin/
 COPY runtime/ /opt/agentserver/runtime/
+# Do not inherit stale managed instructions from HARNESS_BASE.
+COPY --chown=0:0 packs/ /opt/agentserver/packs/
 USER 65530:65530
 WORKDIR /
 STOPSIGNAL SIGTERM

@@ -3,8 +3,9 @@ package sandboxcontract
 import "fmt"
 
 const (
-	EnsureSandboxPath = "/internal/v2/sandboxes:ensure"
-	SandboxPathPrefix = "/internal/v2/sandboxes/"
+	EnsureSandboxPath     = "/internal/v2/sandboxes:ensure"
+	PrepareRepositoryPath = "/internal/v2/repositories:prepare"
+	SandboxPathPrefix     = "/internal/v2/sandboxes/"
 )
 
 func GetSandboxPath(sandboxID string) (string, error) {

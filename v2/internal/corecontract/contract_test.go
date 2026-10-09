@@ -106,6 +106,7 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		ResolveEgressCredentialPath:                                  "resolveEgressCredential",
 		AuthorizeProcessEnvironmentEgressPath:                        "authorizeProcessEnvironmentEgress",
 		ResolveExecutionCredentialPath:                               "resolveExecutionCredential",
+		ResolveRepositoryCredentialPath:                              "resolveRepositoryCredential",
 		RecordEgressCredentialAuditPath:                              "recordEgressCredentialAuditEvent",
 	}
 	for path, operationID := range wantPost {
@@ -389,12 +390,20 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	credentialAuthorizationResourcePath := WorkspaceCredentialAuthorizationResourceRoutePattern
 	credentialAuthorizationPollPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:poll"
 	credentialAuthorizationCancelPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:cancel"
-	if len(document.Paths) != 37 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	if len(document.Paths) != 38 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
 	if document.Paths[decidePath].Post.OperationID != "decideUserApproval" {
 		t.Fatalf("public approval path = %+v", document.Paths[decidePath])
+	}
+	repositoryPath := document.Paths[WorkspaceRepositoryRoutePattern]
+	if repositoryPath.Get.OperationID != "getWorkspaceRepository" || repositoryPath.Patch.OperationID != "updateWorkspaceRepository" ||
+		len(repositoryPath.Get.Security) != 1 || len(repositoryPath.Patch.Security) != 1 ||
+		!slices.Equal(repositoryPath.Get.Security[0]["platformOAuth"], []string{"workspaces:read"}) ||
+		!slices.Equal(repositoryPath.Patch.Security[0]["platformOAuth"], []string{"workspaces:update"}) ||
+		repositoryPath.Get.Security[0]["platformGatewayMTLS"] == nil || repositoryPath.Patch.Security[0]["platformGatewayMTLS"] == nil {
+		t.Fatalf("repository path/security = %+v", repositoryPath)
 	}
 	if document.Paths[sessionsPath].Get.OperationID != "listUserSessions" || document.Paths[sessionsPath].Post.OperationID != "createUserSession" ||
 		document.Paths[sessionPath].Get.OperationID != "getUserSession" || document.Paths[sessionPath].Patch.OperationID != "updateUserSession" ||

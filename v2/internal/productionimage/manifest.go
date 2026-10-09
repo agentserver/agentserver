@@ -47,8 +47,8 @@ const (
 	RuntimeManifestPath     = "opt/agentserver/runtime/runtime-manifest.json"
 	RuntimeBundleRoot       = "opt/agentserver/runtime/bundle"
 	ManagedSkillPath        = "opt/agentserver/packs/managed-cli-readonly/SKILL.md"
-	ManagedSkillSHA256      = "5b75ec8459a11bb385fa5f5f74c0019c3ccf72a54ec478088c0e8296ac596e9f"
-	ManagedSkillSizeBytes   = int64(3183)
+	ManagedSkillSHA256      = "1c4f715f2a374b51085736f3e43b137a3ce6b42851c075746b4b83953f864a99"
+	ManagedSkillSizeBytes   = int64(4544)
 	ManagedLarkSkillPath    = "opt/agentserver/packs/lark-readonly/SKILL.md"
 	ManagedLarkCLIVersion   = "1.0.69"
 	ManagedLarkCLISHA256    = "faee6cf3f4d87194e079820ff7809182cbda1d815bc902700649c737ac0ed943"

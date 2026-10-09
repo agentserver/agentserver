@@ -74,7 +74,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	provider, err := adapter.New(kube, runtime, adapter.Config{Namespace: os.Getenv("AGENTSERVER_V2_SANDBOX_NAMESPACE"), Pool: os.Getenv("AGENTSERVER_V2_SANDBOX_POOL"), Region: config.ProviderRegion, Scope: config.ProviderPSM, ClusterDomain: os.Getenv("AGENTSERVER_V2_CLUSTER_DOMAIN"), RuntimePort: 8443})
+	provider, err := adapter.New(kube, runtime, adapter.Config{Namespace: os.Getenv("AGENTSERVER_V2_SANDBOX_NAMESPACE"), Pool: os.Getenv("AGENTSERVER_V2_SANDBOX_POOL"), Region: config.ProviderRegion, Scope: config.ProviderPSM, ClusterDomain: os.Getenv("AGENTSERVER_V2_CLUSTER_DOMAIN"), RuntimePort: 8443, RepositoryStorageClass: os.Getenv("AGENTSERVER_V2_REPOSITORY_STORAGE_CLASS"), RepositoryStorageSize: os.Getenv("AGENTSERVER_V2_REPOSITORY_STORAGE_SIZE")})
 	if err != nil {
 		return err
 	}

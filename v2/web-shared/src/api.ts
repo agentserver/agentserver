@@ -6,6 +6,8 @@ import { canonicalID } from "./utils"
 
 export type Workspace = PublicComponents["schemas"]["WorkspaceState"]
 export type WorkspaceManagedSandboxSetting = PublicComponents["schemas"]["WorkspaceManagedSandboxSettingState"]
+export type WorkspaceRepositorySetting = PublicComponents["schemas"]["WorkspaceRepositorySettingState"]
+export type WorkspaceRepositorySource = PublicComponents["schemas"]["WorkspaceRepositorySource"]
 export type ManagedSandboxRegion = PublicComponents["schemas"]["ManagedSandboxRegion"]
 export type WorkspaceMember = PublicComponents["schemas"]["WorkspaceMemberState"]
 export type Executor = PublicComponents["schemas"]["ExecutorResourceState"]
@@ -131,6 +133,23 @@ export class ResourceAPI {
       params: { path: { workspaceId: canonicalWorkspace } }, body,
     }))
     validateManagedSandboxSetting(result.setting, canonicalWorkspace)
+    return result
+  }
+
+  async getRepository(workspaceId: string) {
+    const id = canonicalID("workspace ID", workspaceId)
+    const result = take(await this.#client.GET("/v2/workspaces/{workspaceId}/repository", { params: { path: { workspaceId: id } } }))
+    exactKeys(result, ["setting"], "workspace repository")
+    validateRepositorySetting(result.setting, id)
+    return result
+  }
+
+  async updateRepository(workspaceId: string, body: PublicComponents["schemas"]["UpdateWorkspaceRepositoryRequest"]) {
+    const id = canonicalID("workspace ID", workspaceId)
+    const result = take(await this.#client.PATCH("/v2/workspaces/{workspaceId}/repository", { params: { path: { workspaceId: id } }, body }))
+    exactKeys(result, ["setting", "changed"], "workspace repository update")
+    if (typeof result.changed !== "boolean") throw new Error("The repository update response is invalid.")
+    validateRepositorySetting(result.setting, id)
     return result
   }
 
@@ -413,6 +432,27 @@ function validateWorkspace(value: Workspace): Workspace {
   boundedProtocolText(value.name, 256)
   if (!["active", "suspended", "archived"].includes(value.status) || !["owner", "developer", "viewer"].includes(value.currentUserRole) || !["webhook_swap", "process_env"].includes(value.managedLarkCredentialMode) || !positiveVersion(value.version) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The workspace response is invalid.")
   return value
+}
+
+function validateRepositorySetting(value: WorkspaceRepositorySetting, workspaceId: string) {
+  const keys = ["workspaceId", "source", "version"]
+  if (value?.version > 0) keys.push("updatedBy", "updatedAt")
+  exactKeys(value, keys, "repository setting")
+  if (value.workspaceId !== workspaceId || !Number.isSafeInteger(value.version) || value.version < 0) throw new Error("The repository setting escaped its requested scope.")
+  if (value.version > 0) {
+    canonicalID("repository setting updater", value.updatedBy ?? "")
+    if (!validTimestamp(value.updatedAt ?? "")) throw new Error("The repository setting timestamp is invalid.")
+  } else if (value.source !== null) throw new Error("An unconfigured repository setting must be empty.")
+  if (value.source === null) return
+  const source = value.source
+  const sourceKeys = ["url", "ref", "workingDirectory"]
+  if (source?.credentialBindingId !== undefined) sourceKeys.push("credentialBindingId")
+  exactKeys(source, sourceKeys, "repository source")
+  if (typeof source.url !== "string" || source.url.length > 2048 || !/^https:\/\/code\.byted\.org\/[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.git$/u.test(source.url)) throw new Error("The repository URL is invalid.")
+  boundedOpaqueText(source.ref, 256, true)
+  boundedProtocolText(source.workingDirectory, 4096)
+  if (source.workingDirectory !== "." && (/[\\:\x00-\x1f\x7f]/u.test(source.workingDirectory) || source.workingDirectory.split("/").some(part => !part || part === "." || part === ".."))) throw new Error("The repository working directory is invalid.")
+  if (source.credentialBindingId !== undefined) canonicalID("Git credential binding", source.credentialBindingId)
 }
 
 function validateManagedSandboxSetting(value: WorkspaceManagedSandboxSetting, workspaceId: string): WorkspaceManagedSandboxSetting {

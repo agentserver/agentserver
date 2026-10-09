@@ -23,6 +23,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
+	"github.com/agentserver/agentserver/v2/internal/workspacerepository"
 	"github.com/ucarion/jcs"
 )
 
@@ -85,11 +86,13 @@ type ManagedSandboxAuthority struct {
 // absolute host path; executor-gateway resolves that from its registered
 // environment and verifies RootSHA256 before use.
 type WorkspaceAuthority struct {
-	EnvironmentID           string `json:"environmentId"`
-	EnvironmentVersion      int64  `json:"environmentVersion"`
-	RootSHA256              string `json:"rootSha256"`
-	WorkingDirectory        string `json:"workingDirectory"`
-	WorkingDirectoryVersion int64  `json:"workingDirectoryVersion"`
+	EnvironmentID           string                       `json:"environmentId"`
+	EnvironmentVersion      int64                        `json:"environmentVersion"`
+	RootSHA256              string                       `json:"rootSha256"`
+	WorkingDirectory        string                       `json:"workingDirectory"`
+	WorkingDirectoryVersion int64                        `json:"workingDirectoryVersion"`
+	RepositoryID            string                       `json:"repositoryId,omitempty"`
+	Repository              *workspacerepository.Binding `json:"repository,omitempty"`
 }
 
 type ModelRoute struct {
@@ -273,6 +276,9 @@ func (manifest Manifest) Validate() error {
 		return err
 	}
 	if manifest.Workspace != nil {
+		if manifest.Workspace.RepositoryID != "" && (manifest.Workspace.RepositoryID != manifest.SessionID || manifest.ManagedSandbox == nil || manifest.ManagedSandbox.EnvironmentID != manifest.Workspace.EnvironmentID || (manifest.ManagedSandbox.Region != "cn" && manifest.ManagedSandbox.Region != "sg")) {
+			return errors.New("repository workspace must match the session and its managed Kubernetes profile")
+		}
 		hasEnvironmentDiscovery := false
 		requiresEnvironmentDiscovery := false
 		for _, tool := range manifest.ExecutorMCP.Tools {
@@ -337,7 +343,8 @@ func WorkspaceAuthorityFromBinding(binding *workspaceauthority.Binding) (*Worksp
 	return &WorkspaceAuthority{
 		EnvironmentID: binding.EnvironmentID, EnvironmentVersion: binding.EnvironmentVersion,
 		RootSHA256: hex.EncodeToString(binding.RootSHA256[:]), WorkingDirectory: binding.WorkingDirectory,
-		WorkingDirectoryVersion: binding.WorkingDirectoryVersion,
+		WorkingDirectoryVersion: binding.WorkingDirectoryVersion, RepositoryID: binding.RepositoryID,
+		Repository: binding.Repository,
 	}, nil
 }
 
@@ -356,7 +363,10 @@ func (authority *WorkspaceAuthority) Binding() (workspaceauthority.Binding, erro
 	binding := workspaceauthority.Binding{
 		EnvironmentID: authority.EnvironmentID, EnvironmentVersion: authority.EnvironmentVersion,
 		RootSHA256: rootSHA256, WorkingDirectory: authority.WorkingDirectory,
-		WorkingDirectoryVersion: authority.WorkingDirectoryVersion,
+		WorkingDirectoryVersion: authority.WorkingDirectoryVersion, RepositoryID: authority.RepositoryID,
+	}
+	if authority.Repository != nil {
+		binding.Repository = authority.Repository
 	}
 	if err := binding.Validate(); err != nil {
 		return workspaceauthority.Binding{}, err

@@ -169,7 +169,7 @@ func NewConfiguredRegistry(config DefaultRegistryConfig) (*ProviderRegistry, err
 			return nil, err
 		}
 	}
-	return NewRegistry(lark, NewGitHubProvider(), byteCloud)
+	return NewRegistry(lark, NewGitHubProvider(), byteCloud, NewGitProvider())
 }
 
 func NewByteCloudProvider(host string, exchanger func(context.Context, string, string) (string, time.Time, error)) ByteCloudProvider {

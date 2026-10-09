@@ -146,6 +146,28 @@ func TestRunManifestSignsAndVerifiesWorkspaceAuthority(t *testing.T) {
 	}
 }
 
+func TestRepositoryWorkspaceAuthorityIsSessionBound(t *testing.T) {
+	m := validManifest(t)
+	m.Workspace = &WorkspaceAuthority{EnvironmentID: "50000000-0000-4000-8000-000000000005", EnvironmentVersion: 1, RootSHA256: strings.Repeat("1", 64), WorkingDirectory: "src", WorkingDirectoryVersion: 1, RepositoryID: m.SessionID}
+	m.ManagedSandbox = &ManagedSandboxAuthority{SettingVersion: 1, Region: "sg", EnvironmentID: m.Workspace.EnvironmentID}
+	m.ToolPack = &ToolPackAuthority{PackID: "managed-cli-readonly@v1", SkillSHA256: strings.Repeat("2", 64)}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := m.Workspace.Binding()
+	if err != nil || binding.RepositoryID != m.SessionID {
+		t.Fatal("repository identity lost", err)
+	}
+	projection, err := WorkspaceAuthorityFromBinding(&binding)
+	if err != nil || projection.RepositoryID != m.SessionID {
+		t.Fatal("repository identity lost on projection", err)
+	}
+	m.Workspace.RepositoryID = "60000000-0000-4000-8000-000000000006"
+	if err := m.Validate(); err == nil {
+		t.Fatal("cross-session repository authority accepted")
+	}
+}
+
 func TestRunManifestRejectsUnknownCodexPermissionMode(t *testing.T) {
 	manifest := validManifest(t)
 	manifest.PermissionMode = "future-mode"

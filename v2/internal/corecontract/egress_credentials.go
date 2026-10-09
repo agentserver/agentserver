@@ -12,6 +12,7 @@ const (
 	AuthorizeProcessEnvironmentEgressPath   = "/internal/v2/egress/credentials:authorize-process-env"
 	ResolveExecutionCredentialAuthorityPath = "/internal/v2/execution/credentials:resolve-authority"
 	ResolveExecutionCredentialPath          = "/internal/v2/execution/credentials:resolve"
+	ResolveRepositoryCredentialPath         = "/internal/v2/repository/credentials:resolve"
 )
 
 // RecordEgressCredentialAuditPath is kept separate from the legacy
@@ -98,6 +99,19 @@ type ResolveExecutionCredentialResponse struct {
 	TAEPSM            string            `json:"taePsm"`
 	ResolvedAt        time.Time         `json:"resolvedAt"`
 	AccessExpiresAt   *time.Time        `json:"accessExpiresAt,omitempty"`
+}
+
+type ResolveRepositoryCredentialRequest struct {
+	Operation     EgressCredentialOperation `json:"operation"`
+	BindingID     string                    `json:"bindingId"`
+	EnvironmentID string                    `json:"environmentId"`
+	RunID         string                    `json:"runId"`
+	RunAttemptID  string                    `json:"runAttemptId"`
+}
+type ResolveRepositoryCredentialResponse struct {
+	Configured bool   `json:"configured"`
+	Username   string `json:"username,omitempty"`
+	Token      string `json:"token,omitempty"`
 }
 
 // AuthorizeProcessEnvironmentEgressRequest is sent only by the TAE Policy

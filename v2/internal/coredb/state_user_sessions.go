@@ -187,6 +187,11 @@ ON CONFLICT (id) DO NOTHING`, s.table("sessions"))
 			return CreateUserSessionResult{}, databaseError(operation+" insert session", err)
 		}
 		created := tag.RowsAffected() == 1
+		if created {
+			if err := s.inheritSessionRepository(ctx, transaction, operation, command.WorkspaceID, command.SessionID); err != nil {
+				return CreateUserSessionResult{}, err
+			}
+		}
 		session, err := s.readUserSession(ctx, transaction, operation, command.WorkspaceID, command.SessionID, command.ActorID, true)
 		if err != nil {
 			if !created && HasStateErrorCode(err, ErrorNotFound) {
@@ -299,12 +304,19 @@ func (s *StateStore) UpdateUserSessionWorkingDirectory(ctx context.Context, comm
 		if session.WorkingDirectoryVersion >= maxSafeJSONInteger {
 			return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidState, operation, "session_working_directory", command.SessionID, "working-directory version is exhausted")
 		}
+		repository, err := s.readSessionRepository(ctx, transaction, operation, command.WorkspaceID, command.SessionID)
+		if err != nil {
+			return UpdateUserSessionWorkingDirectoryResult{}, err
+		}
+		if repository != nil && command.EnvironmentID != repository.EnvironmentID {
+			return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidState, operation, "session", command.SessionID, "repository sessions keep their bound environment; select another directory within the repository or create a new session")
+		}
 
 		if command.EnvironmentID != "" {
 			// The shared helper keeps the environment lookup in the same
 			// transaction and follows the executor -> environment lock order used
 			// by connection acquire/revoke paths.
-			environment, err := s.readWorkspaceBindingEnvironment(ctx, transaction, operation, command.WorkspaceID, command.EnvironmentID)
+			environment, err := s.readWorkspaceBindingEnvironment(ctx, transaction, operation, command.WorkspaceID, command.EnvironmentID, repository)
 			if err != nil {
 				return UpdateUserSessionWorkingDirectoryResult{}, err
 			}

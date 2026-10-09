@@ -309,6 +309,18 @@ func (client *CoreConnectionClient) AuthorizeExecutorRunCapability(
 	return result, nil
 }
 
+type RepositoryCredentialClient interface {
+	ResolveRepositoryCredential(context.Context, corecontract.ResolveRepositoryCredentialRequest) (corecontract.ResolveRepositoryCredentialResponse, error)
+}
+
+func (client *CoreConnectionClient) ResolveRepositoryCredential(ctx context.Context, request corecontract.ResolveRepositoryCredentialRequest) (corecontract.ResolveRepositoryCredentialResponse, error) {
+	var response corecontract.ResolveRepositoryCredentialResponse
+	if err := client.post(ctx, corecontract.ResolveRepositoryCredentialPath, request, &response, http.StatusOK); err != nil {
+		return response, err
+	}
+	return response, nil
+}
+
 func resultSafeVersion(value int64) int64 {
 	if value < 1 || value > 1<<53-1 {
 		return 0

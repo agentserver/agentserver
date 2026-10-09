@@ -18,5 +18,6 @@ func mountCoreCredentialRoutes(mux *http.ServeMux, egressHandler, executionHandl
 	if executionHandler != nil {
 		mux.Handle(corecontract.ResolveExecutionCredentialAuthorityPath, executionHandler)
 		mux.Handle(corecontract.ResolveExecutionCredentialPath, executionHandler)
+		mux.Handle(corecontract.ResolveRepositoryCredentialPath, executionHandler)
 	}
 }

@@ -50,6 +50,32 @@ func TestRuntimeCommandSharesUnrestrictedPodNetwork(t *testing.T) {
 	}
 }
 
+func TestRuntimeRepositoryProjectsOnlyCheckoutTree(t *testing.T) {
+	source := t.TempDir()
+	if err := os.Mkdir(filepath.Join(source, "src"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := Config{Workspace: "/workspace", repositoryTree: source}
+	for _, mode := range []string{"read", "write"} {
+		args, err := sandboxArguments(c, sandboxcontract.RunCommandRequest{Executable: "git", WorkingDirectory: "/workspace/src", WorkspaceAccess: mode})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bind := "--bind"
+		if mode == "read" {
+			bind = "--ro-bind"
+		}
+		if !strings.Contains(strings.Join(args, "\x00"), bind+"\x00"+source+"\x00/workspace\x00--chdir\x00/workspace/src") {
+			t.Fatal("incorrect checkout projection", args)
+		}
+		for _, arg := range args {
+			if arg == filepath.Dir(source) {
+				t.Fatal("mounted private repository metadata parent")
+			}
+		}
+	}
+}
+
 func liveConfig(t *testing.T) Config {
 	t.Helper()
 	bwrap := os.Getenv("AGENTSERVER_K8S_RUNTIME_LIVE_BWRAP")

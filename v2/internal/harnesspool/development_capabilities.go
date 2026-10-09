@@ -127,6 +127,10 @@ func (source *DevelopmentAttemptRuntimeCapabilitySource) IssueAttemptRuntimeCapa
 		executorClaims.WorkspaceRootSHA256 = prepared.Manifest.Workspace.RootSHA256
 		executorClaims.WorkspaceWorkingDirectory = workspace.WorkingDirectory
 		executorClaims.WorkspaceWorkingDirectoryVersion = workspace.WorkingDirectoryVersion
+		executorClaims.WorkspaceRepositoryID = workspace.RepositoryID
+		if workspace.RepositoryID != "" {
+			executorClaims.WorkspaceRepositoryDescriptor = workspaceRepositoryDescriptor(&workspace)
+		}
 	}
 	executorCapability, err := source.codec.Sign(executorClaims)
 	if err != nil {

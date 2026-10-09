@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
+	"github.com/agentserver/agentserver/v2/internal/repositorycheckout"
 	"github.com/agentserver/agentserver/v2/internal/sandboxclient"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 )
@@ -18,10 +19,12 @@ import (
 // session identity is stored here; the sandbox-gateway allocates and fences
 // that identity when the first executor tool is actually called.
 type ManagedSandboxProvisioningSpec struct {
-	Region        string
-	EnvironmentID string
-	SandboxTTL    time.Duration
-	ActivityTTL   time.Duration
+	Region               string
+	EnvironmentID        string
+	SandboxTTL           time.Duration
+	ActivityTTL          time.Duration
+	RepositoryPreparer   sandboxclient.RepositoryPreparer
+	RepositoryCredential func(context.Context, ExecutorMCPPrincipal, string) (*repositorycheckout.Credential, error)
 }
 
 // ManagedSandboxSessionLease keeps one attempt's managed sandbox activity
@@ -30,6 +33,9 @@ type ManagedSandboxSessionLease interface {
 	Done() <-chan struct{}
 	Err() error
 	Release(context.Context) error
+}
+type repositoryContextLease interface {
+	RepositoryContext() *sandboxcontract.RepositoryContext
 }
 
 type ManagedSandboxSessionAcquirer interface {
@@ -80,6 +86,12 @@ func NewDefaultGatewayManagedSandboxSessionAcquirer(
 	return NewGatewayManagedSandboxSessionAcquirer(client, spec, newRandomUUID, time.Now, logger)
 }
 
+func (acquirer *GatewayManagedSandboxSessionAcquirer) SetRepositoryCredentialResolver(resolver func(context.Context, ExecutorMCPPrincipal, string) (*repositorycheckout.Credential, error)) {
+	if acquirer != nil {
+		acquirer.spec.RepositoryCredential = resolver
+	}
+}
+
 func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 	ctx context.Context,
 	principal ExecutorMCPPrincipal,
@@ -114,6 +126,7 @@ func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 		RunAttemptGeneration: principal.Run.RunAttemptGeneration, HolderID: principal.Run.HolderID,
 	}
 	startedAt := acquirer.now()
+	var repositoryContext *sandboxcontract.RepositoryContext
 	response, err := acquirer.client.Ensure(ctx, sandboxcontract.EnsureSandboxRequest{
 		Profile: sandboxcontract.ProfileV1, RequestID: requestID, Session: session,
 		RequestedTTLSeconds: int64(acquirer.spec.SandboxTTL / time.Second),
@@ -132,10 +145,47 @@ func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 		acquirer.logAcquire(ctx, principal, "initial_activity_failed", ref.SandboxID, ref.TargetGeneration, startedAt, err)
 		return nil, fmt.Errorf("acquire managed sandbox activity on first executor use: %w", err)
 	}
+	if principal.Repository != nil {
+		if acquirer.spec.RepositoryPreparer == nil {
+			return nil, errors.New("repository preparation is not configured for this managed sandbox")
+		}
+		var credential *repositorycheckout.Credential
+		if principal.Repository.Source.CredentialBindingID != "" {
+			if acquirer.spec.RepositoryCredential == nil {
+				return nil, errors.New("Git credential resolver is not configured for this repository")
+			}
+			credential, err = acquirer.spec.RepositoryCredential(ctx, principal, principal.Repository.Source.CredentialBindingID)
+			if err != nil {
+				return nil, fmt.Errorf("resolve Git credential for repository: %w", err)
+			}
+		}
+		request := sandboxcontract.PrepareRepositoryRequest{Profile: sandboxcontract.ProfileV1, Session: session, Ref: ref, CheckoutID: principal.Repository.CheckoutID, Source: sandboxcontract.RepositorySource{URL: principal.Repository.Source.URL, Ref: principal.Repository.Source.Ref, WorkingDirectory: principal.Repository.Source.WorkingDirectory, CredentialBindingID: principal.Repository.Source.CredentialBindingID}}
+		if credential != nil {
+			request.Credential = &sandboxcontract.RepositoryCredential{Username: credential.Username, Token: credential.Token}
+		}
+		prepared, prepErr := acquirer.spec.RepositoryPreparer.PrepareRepository(ctx, request, sandboxclient.TokenRequest{Action: sandboxclient.ActionPrepareRepository, Session: session, Ref: ref, RunID: principal.Run.RunID, RunAttemptID: principal.Run.RunAttemptID, RunAttemptGeneration: principal.Run.RunAttemptGeneration, HolderID: principal.Run.HolderID})
+		if credential != nil {
+			credential.Username = ""
+			credential.Token = ""
+		}
+		if request.Credential != nil {
+			request.Credential.Username = ""
+			request.Credential.Token = ""
+		}
+		if prepErr != nil {
+			return nil, fmt.Errorf("prepare persistent repository checkout: %w", prepErr)
+		}
+		if prepared.CheckoutID != principal.Repository.CheckoutID || prepared.Commit == "" {
+			return nil, errors.New("repository preparation returned an invalid checkout")
+		}
+		contextCopy := prepared.Context
+		repositoryContext = &contextCopy
+	}
 	lease := &gatewayManagedSandboxSessionLease{
 		client: acquirer.client, spec: acquirer.spec, principal: principal, session: session, ref: ref,
 		idGenerator: acquirer.idGenerator, logger: acquirer.logger,
 		stop: make(chan struct{}), done: make(chan struct{}),
+		repositoryContext: repositoryContext,
 	}
 	go lease.keepAlive()
 	acquirer.logAcquire(ctx, principal, "ready", ref.SandboxID, ref.TargetGeneration, startedAt, nil)
@@ -269,13 +319,18 @@ type gatewayManagedSandboxSessionLease struct {
 	idGenerator IDGenerator
 	logger      *slog.Logger
 
-	stop        chan struct{}
-	done        chan struct{}
-	stopOnce    sync.Once
-	releaseOnce sync.Once
-	mu          sync.Mutex
-	err         error
-	releaseErr  error
+	stop              chan struct{}
+	done              chan struct{}
+	stopOnce          sync.Once
+	releaseOnce       sync.Once
+	mu                sync.Mutex
+	err               error
+	releaseErr        error
+	repositoryContext *sandboxcontract.RepositoryContext
+}
+
+func (lease *gatewayManagedSandboxSessionLease) RepositoryContext() *sandboxcontract.RepositoryContext {
+	return lease.repositoryContext
 }
 
 func (lease *gatewayManagedSandboxSessionLease) Done() <-chan struct{} { return lease.done }

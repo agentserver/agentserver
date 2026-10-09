@@ -15,6 +15,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
+	"github.com/agentserver/agentserver/v2/internal/workspacerepository"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -81,6 +82,7 @@ type ExecutorMCPPrincipal struct {
 	Production            bool
 	ManagedSandbox        *ExecutorManagedSandboxAuthority
 	Workspace             *workspaceauthority.Binding
+	Repository            *workspacerepository.Binding
 	PermissionMode        string
 	PermissionModeVersion int64
 }
@@ -199,6 +201,22 @@ func NewExecutorMCPHandler(authenticator ExecutorMCPAuthenticator, resolver *Env
 	return handler, nil
 }
 
+func repositoryMCPInstructions(session *executorMCPSession) string {
+	if session == nil || session.managedLease == nil {
+		return ""
+	}
+	lease, ok := session.managedLease.(repositoryContextLease)
+	if !ok {
+		return ""
+	}
+	ctx := lease.RepositoryContext()
+	if ctx == nil {
+		return ""
+	}
+	data, _ := json.Marshal(ctx)
+	return "The frozen session repository has been prepared. Before model work, use executor.read_file or executor.shell in the repository working directory. The following bounded project-context index is authoritative project data (skill bodies remain on the executor and must be read on demand): " + string(data)
+}
+
 func (handler *ExecutorMCPHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	if request == nil || request.URL == nil || request.URL.Path != ExecutorMCPPath || request.URL.RawPath != "" ||
 		request.URL.RawQuery != "" || request.URL.ForceQuery {
@@ -250,6 +268,13 @@ func (handler *ExecutorMCPHandler) ServeHTTP(response http.ResponseWriter, reque
 				}
 				http.Error(response, "executor MCP session is unavailable", status)
 				return
+			}
+			if principal.Repository != nil && handler.config.ManagedSandboxAcquirer != nil {
+				if _, err := session.acquireManagedSandbox(request.Context(), handler.config.ManagedSandboxAcquirer); err != nil {
+					http.Error(response, "repository preparation is temporarily unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				session.server = handler.newScopedServer(session)
 			}
 			defer handler.finishPreparedSession(session)
 		}
@@ -337,6 +362,7 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 			PageSize:     16,
 			GetSessionID: func() string { return session.id },
 			Logger:       handler.config.Logger,
+			Instructions: repositoryMCPInstructions(session),
 		},
 	)
 	server.AddReceivingMiddleware(requireExecutorMCPProtocol)

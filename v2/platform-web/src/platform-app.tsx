@@ -43,6 +43,7 @@ import {
 } from "@agentserver/v2-web-shared"
 import { buildGatewayRequest, buildGatewayUpdateRequest, callbackState, gatewayBrowserBinding, gatewayCallbackChannelName, gatewayTone, validateGatewayCallback } from "./gateway-oauth"
 import { CredentialsPage } from "./credentials-page"
+import { RepositorySettings } from "./repository-settings"
 
 type WorkspaceSection = "overview" | "members" | "executors" | "gateways" | "credentials"
 
@@ -261,6 +262,7 @@ function WorkspaceOverview({ workspace, api, onChanged, onArchived }: { workspac
   return <><PageHeader eyebrow={shortID(workspace.workspaceId)} title={workspace.name} description={`${workspace.currentUserRole} · ${workspace.status}`} actions={<Button onClick={() => { window.location.href = `https://browser.byted.bps.dev/workspaces/${workspace.workspaceId}` }}><Bot size={16} />{t("platform.openBrowser")}</Button>} />
     {error ? <div className="error-banner">{error}</div> : null}
     <div className="facts-grid"><Fact label={t("platform.workspaceId")} value={workspace.workspaceId} /><Fact label={t("platform.yourRole")} value={workspace.currentUserRole} /><Fact label={t("platform.managedLarkMode")} value={workspace.managedLarkCredentialMode} /><Fact label={t("common.status")} value={workspace.status} /><Fact label={t("common.version")} value={String(workspace.version)} /><Fact label={t("common.created")} value={formatDate(workspace.createdAt, locale)} /><Fact label={t("common.updated")} value={formatDate(workspace.updatedAt, locale)} /></div>
+    <RepositorySettings key={workspace.workspaceId} workspace={workspace} api={api} />
     <Card className="settings-card">
       <div><h2>{t("platform.managedSandboxTitle")}</h2><p>{t("platform.managedSandboxHelp")}</p></div>
       {sandboxError ? <div className="error-banner inline-error">{sandboxError}</div> : null}

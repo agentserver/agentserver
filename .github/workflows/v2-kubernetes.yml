@@ -254,13 +254,17 @@ jobs:
           set -euo pipefail
           release_dir="${RUNNER_TEMP}/kubernetes-release"
           mirror() { sed 's#^ghcr.io/#registry-sg.byted.cs.ac.cn/ghcr/#' "$release_dir/$1.image"; }
+          managed_skill_args=()
+          if [ -f "$release_dir/harness/packs/managed-cli-readonly/SKILL.md" ]; then
+            managed_skill_args+=(--upgrade-managed-skill)
+          fi
           go -C v2 run ./cmd/agentserver-kubernetes-release \
             --config="${RUNNER_TEMP}/kubernetes-base/agentserver-v2-release/production.json" \
             --output="$release_dir/production.json" \
             --service-image="$(mirror service)" --harness-image="$(mirror harness)" \
             --runtime-image="$(mirror k8s-runtime)" --gateway-image="$(mirror k8s-gateway)" \
             --environment-id=4e0e31cf-a8c9-4ef9-8197-71be586532df \
-            --api-cidr=10.251.224.59/32 --all-workspaces --upgrade-codex
+            --api-cidr=10.251.224.59/32 --all-workspaces --upgrade-codex "${managed_skill_args[@]}"
           go -C v2 run ./cmd/agentserver-deploy chart \
             --config="$release_dir/production.json" --output="$release_dir/chart"
           helm lint "$release_dir/chart" --namespace agentserver

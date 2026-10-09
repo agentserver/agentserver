@@ -787,6 +787,36 @@ func (service *Service) RunCommand(ctx context.Context, principal Principal, req
 	return validateExchangeIdentity(exchange, backendRequest.Target, backendRequest.Operation)
 }
 
+func (service *Service) PrepareRepository(ctx context.Context, principal Principal, request sandboxcontract.PrepareRepositoryRequest) (sandboxcontract.PrepareRepositoryResponse, error) {
+	if request.Profile == "" {
+		request.Profile = sandboxcontract.ProfileV1
+	}
+	if request.Session.Validate() != nil || request.Ref.Validate() != nil || request.Session.WorkspaceID != principal.WorkspaceID || request.Session.SessionID != principal.SessionID || request.Session.EnvironmentID != principal.EnvironmentID {
+		return sandboxcontract.PrepareRepositoryResponse{}, forbidden(errors.New("repository session authority mismatch"))
+	}
+	if err := bindSessionPrincipal(principal, ActionPrepareRepository, request.Session); err != nil {
+		return sandboxcontract.PrepareRepositoryResponse{}, forbidden(err)
+	}
+	if err := bindLifecycleRef(principal, request.Ref); err != nil {
+		return sandboxcontract.PrepareRepositoryResponse{}, forbidden(err)
+	}
+	provider, ok := service.provider.(RepositoryProvider)
+	if !ok {
+		return sandboxcontract.PrepareRepositoryResponse{}, unavailable("repository_provider_unavailable", errors.New("repository preparation is not supported by provider"))
+	}
+	state, err := service.core.GetManagedSandbox(ctx, request.Ref.SandboxID, request.Ref.TargetGeneration)
+	if err != nil {
+		return sandboxcontract.PrepareRepositoryResponse{}, coreServiceError("get_failed", err)
+	}
+	if err := service.matchSession(request.Session, state.Sandbox); err != nil {
+		return sandboxcontract.PrepareRepositoryResponse{}, forbidden(err)
+	}
+	if state.Sandbox.ObservedState != "ready" {
+		return sandboxcontract.PrepareRepositoryResponse{}, unavailable("sandbox_not_ready", errors.New("sandbox is not ready"))
+	}
+	return provider.PrepareRepository(ctx, PrepareRepositoryProviderRequest{SessionRef: state.Sandbox.ProviderSessionRef, Request: request})
+}
+
 func (service *Service) SignalCommand(ctx context.Context, principal Principal, request sandboxcontract.SignalCommandRequest) (executionbackend.Exchange, error) {
 	if err := request.Validate(service.limits); err != nil {
 		return nil, dispatchRequestError(err)

@@ -104,7 +104,7 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"), s.table("workspace_
 		}
 		var workspaceBinding *workspaceauthority.Binding
 		if !requireUserMembership {
-			workspaceBinding, err = s.resolveSessionWorkspaceBinding(ctx, transaction, operation, command.WorkspaceID,
+			workspaceBinding, err = s.resolveSessionWorkspaceBinding(ctx, transaction, operation, command.WorkspaceID, command.SessionID,
 				sessionWorkingEnvironmentID, sessionWorkingDirectory, sessionWorkingDirectoryVersion)
 			if err != nil {
 				return CreateRunResult{}, err
@@ -139,6 +139,15 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"), s.table("workspace_
 			command.ExpectedSessionVersion = sessionVersion
 		}
 
+		repository, err := s.readSessionRepository(ctx, transaction, operation, command.WorkspaceID, command.SessionID)
+		if err != nil {
+			return CreateRunResult{}, err
+		}
+		if repository != nil {
+			command.ManagedSandbox = RunManagedSandboxBinding{SettingVersion: repository.ManagedSettingVersion, Region: repository.Region, EnvironmentID: repository.EnvironmentID}
+			managedSandboxRegion = &repository.Region
+			managedSandboxSettingVersion = &repository.ManagedSettingVersion
+		}
 		existingQuery := fmt.Sprintf(`
 SELECT %s
 FROM %s AS r
@@ -222,7 +231,7 @@ WHERE r.workspace_id = $1
 			// Resolve the mutable session binding only after the idempotency lookup
 			// above. A user retry must recover an already committed run even if the
 			// selected environment was disabled or revoked after that run started.
-			workspaceBinding, err = s.resolveSessionWorkspaceBinding(ctx, transaction, operation, command.WorkspaceID,
+			workspaceBinding, err = s.resolveSessionWorkspaceBinding(ctx, transaction, operation, command.WorkspaceID, command.SessionID,
 				sessionWorkingEnvironmentID, sessionWorkingDirectory, sessionWorkingDirectoryVersion)
 			if err != nil {
 				return CreateRunResult{}, err
@@ -447,7 +456,7 @@ func validateCreateRunBase(command CreateRunCommand) error {
 func (s *StateStore) resolveSessionWorkspaceBinding(
 	ctx context.Context,
 	transaction pgx.Tx,
-	operation, workspaceID string,
+	operation, workspaceID, sessionID string,
 	environmentID *string, workingDirectory string, workingDirectoryVersion int64,
 ) (*workspaceauthority.Binding, error) {
 	if workingDirectory == "" {
@@ -459,7 +468,14 @@ func (s *StateStore) resolveSessionWorkspaceBinding(
 	if workingDirectoryVersion < 1 || workingDirectoryVersion > maxSafeJSONInteger {
 		return nil, databaseError(operation+" validate session working directory version", errors.New("stored working-directory version is invalid"))
 	}
+	repository, err := s.readSessionRepository(ctx, transaction, operation, workspaceID, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	if environmentID == nil {
+		if repository != nil {
+			return nil, databaseError(operation+" validate repository environment", errors.New("repository session is missing its environment"))
+		}
 		if workingDirectory != "." {
 			return nil, databaseError(operation+" validate session workspace binding", errors.New("unbound session has a non-root working directory"))
 		}
@@ -468,7 +484,7 @@ func (s *StateStore) resolveSessionWorkspaceBinding(
 	if err := validateUUID("working_environment_id", *environmentID); err != nil {
 		return nil, databaseError(operation+" validate session environment", err)
 	}
-	environment, err := s.readWorkspaceBindingEnvironment(ctx, transaction, operation, workspaceID, *environmentID)
+	environment, err := s.readWorkspaceBindingEnvironment(ctx, transaction, operation, workspaceID, *environmentID, repository)
 	if err != nil {
 		if HasStateErrorCode(err, ErrorNotFound) {
 			return nil, commandError(ErrorInvalidState, operation, "environment", *environmentID, "session working environment is no longer registered in this workspace")
@@ -489,6 +505,10 @@ func (s *StateStore) resolveSessionWorkspaceBinding(
 		EnvironmentID: *environmentID, EnvironmentVersion: environment.Version,
 		RootSHA256: rootSHA256, WorkingDirectory: workingDirectory,
 		WorkingDirectoryVersion: workingDirectoryVersion,
+	}
+	if repository != nil {
+		binding.RepositoryID = repository.CheckoutID
+		binding.Repository = repository
 	}
 	if err := binding.Validate(); err != nil {
 		return nil, databaseError(operation+" validate session workspace binding", err)

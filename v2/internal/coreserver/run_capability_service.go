@@ -3,6 +3,7 @@ package coreserver
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -223,6 +224,11 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 		executorClaims.WorkspaceRootSHA256 = hex.EncodeToString(authority.Workspace.RootSHA256[:])
 		executorClaims.WorkspaceWorkingDirectory = authority.Workspace.WorkingDirectory
 		executorClaims.WorkspaceWorkingDirectoryVersion = authority.Workspace.WorkingDirectoryVersion
+		executorClaims.WorkspaceRepositoryID = authority.Workspace.RepositoryID
+		if authority.Workspace.Repository != nil {
+			raw, _ := json.Marshal(authority.Workspace.Repository)
+			executorClaims.WorkspaceRepositoryDescriptor = base64.RawURLEncoding.EncodeToString(raw)
+		}
 	}
 	if authority.PermissionModeExplicit {
 		executorClaims.PermissionMode = string(authority.PermissionMode)
@@ -644,7 +650,10 @@ func decodeRunWorkspaceBinding(source *corecontract.RunLaunchWorkspaceState) (*w
 	binding := &workspaceauthority.Binding{
 		EnvironmentID: source.EnvironmentID, EnvironmentVersion: source.EnvironmentVersion,
 		RootSHA256: digest, WorkingDirectory: source.WorkingDirectory,
-		WorkingDirectoryVersion: source.WorkingDirectoryVersion,
+		WorkingDirectoryVersion: source.WorkingDirectoryVersion, RepositoryID: source.RepositoryID,
+	}
+	if source.Repository != nil {
+		binding.Repository = source.Repository
 	}
 	if err := binding.Validate(); err != nil {
 		return nil, err
@@ -676,7 +685,7 @@ func decodePermissionModeProjection(value string, version int64) (runmanifest.Co
 func workspaceBindingFromClaims(claims runcapability.Claims) (*workspaceauthority.Binding, error) {
 	configured := claims.WorkspaceEnvironmentID != "" || claims.WorkspaceEnvironmentVersion != 0 ||
 		claims.WorkspaceRootSHA256 != "" || claims.WorkspaceWorkingDirectory != "" ||
-		claims.WorkspaceWorkingDirectoryVersion != 0
+		claims.WorkspaceWorkingDirectoryVersion != 0 || claims.WorkspaceRepositoryID != ""
 	if !configured {
 		return nil, nil
 	}
@@ -687,7 +696,7 @@ func workspaceBindingFromClaims(claims runcapability.Claims) (*workspaceauthorit
 	binding := &workspaceauthority.Binding{
 		EnvironmentID: claims.WorkspaceEnvironmentID, EnvironmentVersion: claims.WorkspaceEnvironmentVersion,
 		RootSHA256: digest, WorkingDirectory: claims.WorkspaceWorkingDirectory,
-		WorkingDirectoryVersion: claims.WorkspaceWorkingDirectoryVersion,
+		WorkingDirectoryVersion: claims.WorkspaceWorkingDirectoryVersion, RepositoryID: claims.WorkspaceRepositoryID,
 	}
 	if err := binding.Validate(); err != nil {
 		return nil, err

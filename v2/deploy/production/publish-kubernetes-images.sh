@@ -8,6 +8,7 @@ test ! -e "$RELEASE_DIRECTORY"
 test -f "$v2_root/platform-web/dist/index.html" || { printf '%s\n' 'Build Platform from source with pnpm --dir v2 web:build first' >&2; exit 1; }
 test -f "$v2_root/dsh-web/dist/plugin-resources.json" || { printf '%s\n' 'Build the pinned DSH submodule with bash v2/dsh-web/build.sh first' >&2; exit 1; }
 mkdir -p "$RELEASE_DIRECTORY/cli/bkectl-skills" "$RELEASE_DIRECTORY/service/bin" "$RELEASE_DIRECTORY/harness/bin"
+bash "$v2_root/deploy/production/prepare-managed-instructions.sh" "$RELEASE_DIRECTORY/harness/packs"
 if [ -n "${CODEX_RUNTIME_DIRECTORY:-}" ]; then
   cp -R "$CODEX_RUNTIME_DIRECTORY" "$RELEASE_DIRECTORY/harness/runtime"
 else
@@ -49,6 +50,7 @@ docker buildx build --platform linux/amd64 --load \
   -f "$v2_root/deploy/production/security/profile-installer.Containerfile" "$v2_root/deploy/production/security"
 docker run --rm --entrypoint /usr/local/bin/bkectl "ghcr.io/agentserver/v2-k8s-runtime:$RELEASE_TAG" --json version
 docker run --rm --entrypoint /usr/local/bin/lark-cli "ghcr.io/agentserver/v2-k8s-runtime:$RELEASE_TAG" --version
+docker run --rm --entrypoint /bin/sh "ghcr.io/agentserver/v2-k8s-runtime:$RELEASE_TAG" -c 'printf "%s" "{\"ready\":true}" | jq -e .ready'
 for kind in service harness k8s-runtime k8s-gateway k8s-profile-installer; do
   image="ghcr.io/agentserver/v2-$kind:$RELEASE_TAG"
   docker push "$image"

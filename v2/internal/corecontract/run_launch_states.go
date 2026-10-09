@@ -1,5 +1,7 @@
 package corecontract
 
+import "github.com/agentserver/agentserver/v2/internal/workspacerepository"
+
 const ResolveRunLaunchStatePath = "/internal/v2/run-launch-states:resolve"
 
 type ResolveRunLaunchStateRequest struct {
@@ -65,11 +67,13 @@ type RunLaunchManagedSandboxState struct {
 // authority. RootSHA256 fingerprints the registered root descriptor; no host
 // filesystem path is exposed to the worker.
 type RunLaunchWorkspaceState struct {
-	EnvironmentID           string `json:"environmentId"`
-	EnvironmentVersion      int64  `json:"environmentVersion"`
-	RootSHA256              string `json:"rootSha256"`
-	WorkingDirectory        string `json:"workingDirectory"`
-	WorkingDirectoryVersion int64  `json:"workingDirectoryVersion"`
+	EnvironmentID           string                       `json:"environmentId"`
+	EnvironmentVersion      int64                        `json:"environmentVersion"`
+	RootSHA256              string                       `json:"rootSha256"`
+	WorkingDirectory        string                       `json:"workingDirectory"`
+	WorkingDirectoryVersion int64                        `json:"workingDirectoryVersion"`
+	RepositoryID            string                       `json:"repositoryId,omitempty"`
+	Repository              *workspacerepository.Binding `json:"repository,omitempty"`
 }
 
 type ResolveRunLaunchStateResponse struct {

@@ -468,7 +468,8 @@ func (client *CoreClient) IssueRunCapabilities(
 		contractRequest.Workspace = &corecontract.RunLaunchWorkspaceState{
 			EnvironmentID: request.Workspace.EnvironmentID, EnvironmentVersion: request.Workspace.EnvironmentVersion,
 			RootSHA256:       hex.EncodeToString(request.Workspace.RootSHA256[:]),
-			WorkingDirectory: request.Workspace.WorkingDirectory, WorkingDirectoryVersion: request.Workspace.WorkingDirectoryVersion,
+			WorkingDirectory: request.Workspace.WorkingDirectory, WorkingDirectoryVersion: request.Workspace.WorkingDirectoryVersion, RepositoryID: request.Workspace.RepositoryID,
+			Repository: request.Workspace.Repository,
 		}
 	}
 	contractRequest.PermissionMode = request.PermissionMode
@@ -630,7 +631,7 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 		workspace := &workspaceauthority.Binding{
 			EnvironmentID: binding.EnvironmentID, EnvironmentVersion: binding.EnvironmentVersion,
 			RootSHA256: rootSHA256, WorkingDirectory: binding.WorkingDirectory,
-			WorkingDirectoryVersion: binding.WorkingDirectoryVersion,
+			WorkingDirectoryVersion: binding.WorkingDirectoryVersion, RepositoryID: binding.RepositoryID, Repository: binding.Repository,
 		}
 		if err := workspace.Validate(); err != nil {
 			return RunLaunchState{}, fmt.Errorf("validate core launch-state response workspace authority: %w", err)

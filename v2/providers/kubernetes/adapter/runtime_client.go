@@ -19,6 +19,19 @@ import (
 
 type HTTPRuntimeClient struct{ client *http.Client }
 
+func (c *HTTPRuntimeClient) PrepareRepository(ctx context.Context, e Endpoint, r k8sruntime.PrepareRepositoryRequest) (k8sruntime.RepositoryState, error) {
+	resp, err := c.request(ctx, e, http.MethodPost, k8sruntime.PrepareRepositoryPath, r)
+	if err != nil {
+		return k8sruntime.RepositoryState{}, err
+	}
+	defer resp.Body.Close()
+	var state k8sruntime.RepositoryState
+	if resp.StatusCode != http.StatusOK || decodeRuntimeJSON(resp.Body, &state) != nil {
+		return k8sruntime.RepositoryState{}, errors.New("runtime repository preparation failed")
+	}
+	return state, nil
+}
+
 // NewHTTPRuntimeClient requires a caller-provided authenticated transport.
 // Production assembly configures server verification and gateway mTLS.
 func NewHTTPRuntimeClient(client *http.Client) (*HTTPRuntimeClient, error) {

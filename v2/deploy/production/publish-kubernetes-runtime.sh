@@ -4,6 +4,7 @@ v2_root=$(cd "$(dirname "$0")/../.." && pwd)
 : "${RELEASE_DIRECTORY:?}" "${GITHUB_SHA:?}"
 test ! -e "$RELEASE_DIRECTORY"
 mkdir -p "$RELEASE_DIRECTORY/runtime"
+bash "$v2_root/deploy/production/prepare-managed-instructions.sh" "$RELEASE_DIRECTORY/runtime/packs"
 for kind in service harness k8s-runtime k8s-gateway k8s-profile-installer; do
   jq -er --arg kind "$kind" '.images[$kind]' \
     "$v2_root/deploy/production/kubernetes-published-images.json" >"$RELEASE_DIRECTORY/$kind.image"
@@ -20,5 +21,6 @@ docker buildx build --platform linux/amd64 --load --build-arg "RUNTIME_BASE=$run
   -t "$image" -f "$v2_root/deploy/production/kubernetes-runtime-repair.Containerfile" "$RELEASE_DIRECTORY/runtime"
 docker run --rm --entrypoint /usr/local/bin/bkectl "$image" --json version
 docker run --rm --entrypoint /usr/local/bin/lark-cli "$image" --version
+docker run --rm --entrypoint /bin/sh "$image" -c 'printf "%s" "{\"ready\":true}" | jq -e .ready'
 docker push "$image"
 docker inspect --format '{{index .RepoDigests 0}}' "$image" >"$RELEASE_DIRECTORY/k8s-runtime.image"

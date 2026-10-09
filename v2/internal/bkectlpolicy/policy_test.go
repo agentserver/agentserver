@@ -12,6 +12,7 @@ func TestCredentialRequiredDoesNotAuthorizeCommandPaths(t *testing.T) {
 		{"future", "command", "introduced", "after", "this", "release"},
 		{"bytesd", "node", "block", "--ip", "10.0.0.1"},
 		{"--confirm-write", "quota", "resource-pool", "create"},
+		{"--confirm-write", "k8s", "node", "shell", "--command", "df -h | jq -R ."},
 		{"k8s", "pod", "get", "--debug"},
 		{"auth", "status"},
 	} {

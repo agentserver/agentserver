@@ -1,7 +1,48 @@
 import { useState, type FormEvent } from "react"
 import { useTranslation } from "react-i18next"
 import { Button, Dialog, DialogClose, DialogContent, DialogTrigger, Input, Label, safeError, type ResourceAPI } from "@agentserver/v2-web-shared"
-import { byteCloudCredentialInput } from "./manual-credential"
+import { byteCloudCredentialInput, gitCredentialInput } from "./manual-credential"
+
+export function GitCredentialDialog({ api, workspaceId, onCreated }: { api: ResourceAPI; workspaceId: string; onCreated: () => Promise<void> }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  const [bindingId, setBindingId] = useState("")
+  const changeOpen = (next: boolean) => {
+    if (busy) return
+    setOpen(next); setError("")
+    if (next) setBindingId(crypto.randomUUID())
+  }
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = event.currentTarget
+    let input: ReturnType<typeof gitCredentialInput>
+    try { input = gitCredentialInput(new FormData(form), bindingId) }
+    catch { setError(t("credentials.gitInvalid")); return }
+    form.reset()
+    setBusy(true); setError("")
+    try {
+      await api.createCredential(workspaceId, "git", input)
+      setOpen(false)
+      await onCreated()
+    } catch (requestError) { setError(safeError(requestError)) }
+    finally { setBusy(false) }
+  }
+  return <Dialog open={open} onOpenChange={changeOpen}>
+    <DialogTrigger asChild><Button>{t("credentials.addGit")}</Button></DialogTrigger>
+    <DialogContent title={t("credentials.addGit")} description={t("credentials.gitHelp")}>
+      {open ? <form onSubmit={event => void submit(event)} autoComplete="off">
+        <Label htmlFor="git-name">{t("common.name")}</Label><Input id="git-name" name="displayName" maxLength={256} required disabled={busy} />
+        <Label htmlFor="git-username">{t("credentials.gitUsername")}</Label><Input id="git-username" name="username" autoComplete="off" maxLength={256} required disabled={busy} />
+        <Label htmlFor="git-token">{t("credentials.gitToken")}</Label><Input id="git-token" name="token" type="password" autoComplete="new-password" maxLength={8192} required disabled={busy} />
+        <label className="checkbox-row credential-default-check"><input type="checkbox" name="makeDefault" defaultChecked disabled={busy} />{t("credentials.makeDefault")}</label>
+        {error ? <div className="error-banner inline-error">{error}</div> : null}
+        <div className="form-actions"><DialogClose asChild><Button type="button" variant="ghost" disabled={busy}>{t("common.cancel")}</Button></DialogClose><Button type="submit" disabled={busy}>{busy ? t("common.loading") : t("common.save")}</Button></div>
+      </form> : null}
+    </DialogContent>
+  </Dialog>
+}
 
 export function ByteCloudCredentialDialog({ api, workspaceId, onCreated }: { api: ResourceAPI; workspaceId: string; onCreated: () => Promise<void> }) {
   const { t } = useTranslation()

@@ -73,6 +73,8 @@ type Claims struct {
 	WorkspaceRootSHA256              string `json:"workspaceRootSha256,omitempty"`
 	WorkspaceWorkingDirectory        string `json:"workspaceWorkingDirectory,omitempty"`
 	WorkspaceWorkingDirectoryVersion int64  `json:"workspaceWorkingDirectoryVersion,omitempty"`
+	WorkspaceRepositoryID            string `json:"workspaceRepositoryId,omitempty"`
+	WorkspaceRepositoryDescriptor    string `json:"workspaceRepositoryDescriptor,omitempty"`
 	PermissionMode                   string `json:"permissionMode,omitempty"`
 	PermissionModeVersion            int64  `json:"permissionModeVersion,omitempty"`
 
@@ -242,8 +244,14 @@ func (claims Claims) validateAuthority(profile string) error {
 			}
 		}
 		workspaceConfigured := claims.WorkspaceEnvironmentID != "" || claims.WorkspaceEnvironmentVersion != 0 ||
-			claims.WorkspaceRootSHA256 != "" || claims.WorkspaceWorkingDirectory != "" || claims.WorkspaceWorkingDirectoryVersion != 0
+			claims.WorkspaceRootSHA256 != "" || claims.WorkspaceWorkingDirectory != "" || claims.WorkspaceWorkingDirectoryVersion != 0 || claims.WorkspaceRepositoryID != ""
 		if workspaceConfigured {
+			if claims.WorkspaceRepositoryID != "" && claims.WorkspaceRepositoryDescriptor == "" {
+				return fmt.Errorf("%s executor repository descriptor is missing", profile)
+			}
+			if claims.WorkspaceRepositoryID != "" && (!validDevelopmentUUID(claims.WorkspaceRepositoryID) || claims.WorkspaceRepositoryID != claims.SessionID || claims.WorkspaceEnvironmentID != claims.ManagedSandboxEnvironmentID || (claims.ManagedSandboxRegion != "cn" && claims.ManagedSandboxRegion != "sg") || claims.WorkspaceRepositoryDescriptor == "") {
+				return fmt.Errorf("%s executor repository authority is invalid", profile)
+			}
 			if !validDevelopmentUUID(claims.WorkspaceEnvironmentID) ||
 				claims.WorkspaceEnvironmentVersion < 1 || claims.WorkspaceEnvironmentVersion > maxSafeJSONInteger ||
 				!validNonZeroDevelopmentDigest(claims.WorkspaceRootSHA256) || claims.WorkspaceWorkingDirectoryVersion < 1 ||
@@ -289,7 +297,7 @@ func (claims Claims) validateAuthority(profile string) error {
 			return fmt.Errorf("%s model capability contains managed sandbox authority", profile)
 		}
 		if claims.WorkspaceEnvironmentID != "" || claims.WorkspaceEnvironmentVersion != 0 || claims.WorkspaceRootSHA256 != "" ||
-			claims.WorkspaceWorkingDirectory != "" || claims.WorkspaceWorkingDirectoryVersion != 0 || claims.PermissionMode != "" || claims.PermissionModeVersion != 0 {
+			claims.WorkspaceWorkingDirectory != "" || claims.WorkspaceWorkingDirectoryVersion != 0 || claims.WorkspaceRepositoryID != "" || claims.PermissionMode != "" || claims.PermissionModeVersion != 0 {
 			return fmt.Errorf("%s model capability contains executor workspace authority", profile)
 		}
 	default:

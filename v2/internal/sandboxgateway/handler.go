@@ -54,6 +54,14 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		handler.ensure(response, request)
 		return
 	}
+	if request.URL.Path == sandboxcontract.PrepareRepositoryPath {
+		if request.Method != http.MethodPost {
+			handler.notFound(response)
+			return
+		}
+		handler.prepareRepository(response, request)
+		return
+	}
 	route, ok := parseSandboxRoute(request.URL.Path)
 	if !ok {
 		handler.notFound(response)
@@ -79,6 +87,23 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	default:
 		handler.notFound(response)
 	}
+}
+
+func (handler *Handler) prepareRepository(response http.ResponseWriter, request *http.Request) {
+	principal, ok := handler.authorize(response, request, ActionPrepareRepository)
+	if !ok {
+		return
+	}
+	var command sandboxcontract.PrepareRepositoryRequest
+	if !handler.decode(response, request, &command) {
+		return
+	}
+	result, err := handler.service.PrepareRepository(request.Context(), principal, command)
+	if err != nil {
+		handler.writeError(response, err)
+		return
+	}
+	handler.writeJSON(response, result)
 }
 
 func (handler *Handler) ensure(response http.ResponseWriter, request *http.Request) {

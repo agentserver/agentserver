@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
@@ -118,7 +119,7 @@ func (resolver *EnvironmentResolver) list(ctx context.Context, scope Environment
 			return ListEnvironmentsResult{}, errors.New("run attempt generation must be positive for a scoped environment lookup")
 		}
 	}
-	registered, err := resolver.listRegistered(ctx, scope)
+	registered, err := resolver.listRegisteredStable(ctx, scope)
 	if err != nil {
 		return ListEnvironmentsResult{}, err
 	}
@@ -207,7 +208,7 @@ func (resolver *EnvironmentResolver) resolve(ctx context.Context, scope Environm
 			return ResolvedEnvironment{}, errors.New("environment is outside the frozen workspace authority")
 		}
 	}
-	registered, err := resolver.listRegistered(ctx, scope)
+	registered, err := resolver.listRegisteredStable(ctx, scope)
 	if err != nil {
 		return ResolvedEnvironment{}, err
 	}
@@ -286,6 +287,32 @@ func (resolver *EnvironmentResolver) listRegistered(ctx context.Context, scope E
 		return scoped.ListScopedEnvironments(ctx, scope)
 	}
 	return resolver.registry.ListEnvironments(ctx, scope.WorkspaceID, scope.ExecutorID)
+}
+
+// listRegisteredStable closes the small visibility window between managed
+// sandbox activity acquisition and the Core scoped environment projection.
+// The lease is already authoritative; a transient empty projection must not
+// turn a valid k8s target into the generic AgentX-style "not connected" error.
+// Retries are deliberately bounded and never fall back to another backend.
+func (resolver *EnvironmentResolver) listRegisteredStable(ctx context.Context, scope EnvironmentRegistryScope) ([]RegisteredEnvironment, error) {
+	registered, err := resolver.listRegistered(ctx, scope)
+	if err != nil || len(registered) != 0 || scope.SessionID == "" || scope.Workspace == nil || scope.Workspace.RepositoryID == "" {
+		return registered, err
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		timer := time.NewTimer(time.Duration(attempt+1) * 50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		registered, err = resolver.listRegistered(ctx, scope)
+		if err != nil || len(registered) != 0 {
+			return registered, err
+		}
+	}
+	return registered, nil
 }
 
 type environmentRootDescriptor struct {

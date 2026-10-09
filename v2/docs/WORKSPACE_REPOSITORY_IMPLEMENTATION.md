@@ -24,6 +24,16 @@ runtime-file isolation, background-process cleanup, managed CLI smoke tests,
 and repository file projection tests. It contained only synthetic test data and
 was deleted after the checks. Production services have not yet been upgraded.
 
+Additional live SG/CN publication checks passed: a `longhorn` RWOP PVC
+blocked a concurrent second Pod, then survived deletion of its writer and
+reattached with the synthetic marker intact. The real Kubernetes provider
+also created and reused its PVC/template/zero-spare pool against both API
+servers, verifying admission/defaulting behavior beyond fake clients. All
+synthetic resources were removed. The opt-in regression is
+`TestLiveRepositoryResourceRoundTrip`; it does not access workspace secrets.
+The user explicitly approved namespace-local create/get for these three
+resource kinds, not PVC deletion/Secret/node permissions for the gateway.
+
 ## Requested behavior
 
 - A workspace can configure a Git repository, for example `https://code.byted.org/tce/rtm-aihub`, a ref and a relative working directory.

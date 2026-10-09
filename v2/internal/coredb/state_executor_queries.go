@@ -44,7 +44,12 @@ func (s *StateStore) ListOnlineExecutorEnvironments(ctx context.Context, query L
 			arguments = append(arguments, query.ExecutorID)
 			executorFilter = " AND env.executor_id = $2"
 		}
-		statement := fmt.Sprintf(`
+		result := make([]OnlineExecutorEnvironment, 0)
+		// A scoped managed lookup must not be polluted by the legacy AgentX
+		// projection. The same environment UUID may still exist in the
+		// historical catalog while the session/run target is already k8s/TAE.
+		if !scoped {
+			statement := fmt.Sprintf(`
 SELECT env.id::text,
        env.executor_id::text,
        env.root_descriptor::text,
@@ -64,38 +69,38 @@ WHERE executor.workspace_id = $1
   AND connection.expires_at > pg_catalog.clock_timestamp()%s
 ORDER BY env.executor_id, env.id
 LIMIT %d`, s.table("executor_environments"), s.table("executors"), s.table("executor_connections"), executorFilter, MaxListedExecutorEnvironments+1)
-		rows, err := transaction.Query(ctx, statement, arguments...)
-		if err != nil {
-			return nil, databaseError(operation+" query environments", err)
-		}
-		defer rows.Close()
-		result := make([]OnlineExecutorEnvironment, 0)
-		for rows.Next() {
-			var environment OnlineExecutorEnvironment
-			var rootDescriptor []byte
-			if err := rows.Scan(
-				&environment.EnvironmentID,
-				&environment.ExecutorID,
-				&rootDescriptor,
-				&environment.Platform,
-				&environment.OuterProfileVersion,
-				&environment.InsecureDev,
-				&environment.EnvironmentVersion,
-				&environment.ConnectionGeneration,
-			); err != nil {
-				return nil, databaseError(operation+" scan environment", err)
+			rows, err := transaction.Query(ctx, statement, arguments...)
+			if err != nil {
+				return nil, databaseError(operation+" query environments", err)
 			}
-			if err := validateStoredRootDescriptor(rootDescriptor); err != nil {
-				return nil, databaseError(operation+" validate stored root descriptor", err)
+			defer rows.Close()
+			for rows.Next() {
+				var environment OnlineExecutorEnvironment
+				var rootDescriptor []byte
+				if err := rows.Scan(
+					&environment.EnvironmentID,
+					&environment.ExecutorID,
+					&rootDescriptor,
+					&environment.Platform,
+					&environment.OuterProfileVersion,
+					&environment.InsecureDev,
+					&environment.EnvironmentVersion,
+					&environment.ConnectionGeneration,
+				); err != nil {
+					return nil, databaseError(operation+" scan environment", err)
+				}
+				if err := validateStoredRootDescriptor(rootDescriptor); err != nil {
+					return nil, databaseError(operation+" validate stored root descriptor", err)
+				}
+				environment.RootDescriptor = append(json.RawMessage(nil), rootDescriptor...)
+				result = append(result, environment)
+				if len(result) > MaxListedExecutorEnvironments {
+					return nil, commandError(ErrorConflict, operation, "workspace", query.WorkspaceID, "online environment result exceeds the Phase 1 bound; use an executor filter")
+				}
 			}
-			environment.RootDescriptor = append(json.RawMessage(nil), rootDescriptor...)
-			result = append(result, environment)
-			if len(result) > MaxListedExecutorEnvironments {
-				return nil, commandError(ErrorConflict, operation, "workspace", query.WorkspaceID, "online environment result exceeds the Phase 1 bound; use an executor filter")
+			if err := rows.Err(); err != nil {
+				return nil, databaseError(operation+" iterate environments", err)
 			}
-		}
-		if err := rows.Err(); err != nil {
-			return nil, databaseError(operation+" iterate environments", err)
 		}
 		if scoped {
 			managedArguments := []any{query.WorkspaceID, query.SessionID, query.RunAttemptID, query.RunAttemptGeneration}

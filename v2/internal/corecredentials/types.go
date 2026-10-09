@@ -272,16 +272,19 @@ func (registry *ProviderRegistry) Schemas() []ProviderSchema {
 	for _, provider := range registry.providers {
 		if schemaProvider, ok := provider.(SchemaProvider); ok {
 			schema := schemaProvider.Schema()
-			schema.AuthTypes = append([]string(nil), schema.AuthTypes...)
-			schema.AllowedHosts = append([]string(nil), schema.AllowedHosts...)
-			schema.AllowedHeaders = append([]string(nil), schema.AllowedHeaders...)
-			schema.AuthorizationMethods = append([]string(nil), schema.AuthorizationMethods...)
+			// Keep empty lists as JSON [] rather than nil/JSON null. The public
+			// provider schema is consumed by strict clients that distinguish an
+			// empty closed-world capability list from a malformed response.
+			schema.AuthTypes = append([]string{}, schema.AuthTypes...)
+			schema.AllowedHosts = append([]string{}, schema.AllowedHosts...)
+			schema.AllowedHeaders = append([]string{}, schema.AllowedHeaders...)
+			schema.AuthorizationMethods = append([]string{}, schema.AuthorizationMethods...)
 			result = append(result, schema)
 			continue
 		}
 		result = append(result, ProviderSchema{
 			Kind: provider.Kind(), DisplayName: provider.Kind(),
-			AllowedHeaders: append([]string(nil), provider.AllowedHeaders()...),
+			AllowedHeaders: append([]string{}, provider.AllowedHeaders()...),
 		})
 	}
 	for i := 1; i < len(result); i++ {

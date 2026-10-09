@@ -249,6 +249,24 @@ func TestProviderRegistrySchemasDefensivelyCopiesProviderSlices(t *testing.T) {
 	}
 }
 
+func TestProviderRegistrySchemasEncodeEmptyCapabilitiesAsArrays(t *testing.T) {
+	provider := &sharedSchemaTestProvider{
+		BearerProvider: BearerProvider{KindValue: "empty", HostValue: "empty.example"},
+		shared:         ProviderSchema{Kind: "empty", DisplayName: "Empty", AllowedHeaders: []string{}},
+	}
+	registry, err := NewRegistry(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(registry.Schemas())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"authTypes":null`) || strings.Contains(string(raw), `"allowedHosts":null`) || strings.Contains(string(raw), `"allowedHeaders":null`) || strings.Contains(string(raw), `"authorizationMethods":null`) {
+		t.Fatalf("empty provider capabilities encoded as null: %s", raw)
+	}
+}
+
 type sharedSchemaTestProvider struct {
 	BearerProvider
 	shared ProviderSchema

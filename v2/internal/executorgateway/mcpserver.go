@@ -137,6 +137,7 @@ type executorMCPSession struct {
 	principal ExecutorMCPPrincipal
 	server    *mcp.Server
 	pending   bool
+	cleanup   *time.Timer
 
 	managedMu    sync.Mutex
 	managedLease ManagedSandboxSessionLease
@@ -331,6 +332,8 @@ func (writer *executorMCPResponseWriter) Unwrap() http.ResponseWriter {
 }
 
 var errExecutorMCPSessionLimit = errors.New("executor MCP session limit reached")
+
+const preparedMCPSessionGrace = 5 * time.Second
 
 func (handler *ExecutorMCPHandler) prepareSession(principal ExecutorMCPPrincipal) (*executorMCPSession, error) {
 	handler.mu.Lock()
@@ -819,13 +822,31 @@ func (handler *ExecutorMCPHandler) finishPreparedSession(session *executorMCPSes
 		return
 	}
 	session.pending = false
-	var lease ManagedSandboxSessionLease
 	if !mcpServerHasSessions(session.server) {
-		delete(handler.sessions, session.id)
-		lease = session.detachManagedSandboxLease()
+		handler.schedulePreparedSessionCleanupLocked(session)
 	}
 	handler.mu.Unlock()
-	releaseManagedSandboxLeaseAsync(lease, handler.config.Logger)
+}
+
+// The first Streamable HTTP request can finish before the official SDK has
+// registered its MCP session. Keep the managed lease alive briefly so the next
+// request does not observe an empty scoped environment projection.
+func (handler *ExecutorMCPHandler) schedulePreparedSessionCleanupLocked(session *executorMCPSession) {
+	if session.cleanup != nil {
+		session.cleanup.Stop()
+	}
+	session.cleanup = time.AfterFunc(preparedMCPSessionGrace, func() {
+		handler.mu.Lock()
+		if handler.sessions[session.id] != session || session.pending || mcpServerHasSessions(session.server) {
+			handler.mu.Unlock()
+			return
+		}
+		delete(handler.sessions, session.id)
+		session.cleanup = nil
+		lease := session.detachManagedSandboxLease()
+		handler.mu.Unlock()
+		releaseManagedSandboxLeaseAsync(lease, handler.config.Logger)
+	})
 }
 
 func (handler *ExecutorMCPHandler) authorizeSession(sessionID string, principal ExecutorMCPPrincipal) (*executorMCPSession, error) {
@@ -838,6 +859,10 @@ func (handler *ExecutorMCPHandler) authorizeSession(sessionID string, principal 
 	session := handler.sessions[sessionID]
 	if session == nil || !equalExecutorMCPPrincipals(session.principal, principal) {
 		return nil, errors.New("MCP session principal mismatch")
+	}
+	if session.cleanup != nil {
+		session.cleanup.Stop()
+		session.cleanup = nil
 	}
 	return session, nil
 }
@@ -881,6 +906,10 @@ func (handler *ExecutorMCPHandler) finishExistingSession(sessionID string, sessi
 	var lease ManagedSandboxSessionLease
 	if handler.sessions[sessionID] == session && !mcpServerHasSessions(session.server) {
 		delete(handler.sessions, sessionID)
+		if session.cleanup != nil {
+			session.cleanup.Stop()
+			session.cleanup = nil
+		}
 		lease = session.detachManagedSandboxLease()
 	}
 	handler.mu.Unlock()
@@ -889,8 +918,12 @@ func (handler *ExecutorMCPHandler) finishExistingSession(sessionID string, sessi
 
 func (handler *ExecutorMCPHandler) sweepClosedSessionsLocked() {
 	for sessionID, session := range handler.sessions {
-		if !session.pending && !mcpServerHasSessions(session.server) {
+		if !session.pending && session.cleanup == nil && !mcpServerHasSessions(session.server) {
 			delete(handler.sessions, sessionID)
+			if session.cleanup != nil {
+				session.cleanup.Stop()
+				session.cleanup = nil
+			}
 			lease := session.detachManagedSandboxLease()
 			releaseManagedSandboxLeaseAsync(lease, handler.config.Logger)
 		}

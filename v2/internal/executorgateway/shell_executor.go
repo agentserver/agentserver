@@ -424,7 +424,9 @@ func (executor *ShellExecutor) executeManaged(
 		executor.logManagedDispatchFailure(request.Principal, environment.Target, startOperation, "start_dispatch", dispatchErr)
 		result := newUnknownShellResult(plan.ProcessID)
 		closed, closeErr := executor.closeWithoutStartExchange(executionCtx, state, plan, result, dispatchErr)
-		executor.fenceManagedUnknown(executionCtx, request.Principal, environment.Target, "process_start_dispatch_unknown")
+		if executionbackend.OutcomeOf(dispatchErr) == executionbackend.OutcomeUnknown {
+			executor.fenceManagedUnknown(executionCtx, request.Principal, environment.Target, "process_start_dispatch_unknown")
+		}
 		return closed, closeErr
 	}
 	dispatchStatus := "succeeded"

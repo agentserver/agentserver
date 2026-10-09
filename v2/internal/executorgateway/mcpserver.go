@@ -333,8 +333,6 @@ func (writer *executorMCPResponseWriter) Unwrap() http.ResponseWriter {
 
 var errExecutorMCPSessionLimit = errors.New("executor MCP session limit reached")
 
-const preparedMCPSessionGrace = 5 * time.Second
-
 func (handler *ExecutorMCPHandler) prepareSession(principal ExecutorMCPPrincipal) (*executorMCPSession, error) {
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
@@ -822,22 +820,21 @@ func (handler *ExecutorMCPHandler) finishPreparedSession(session *executorMCPSes
 		return
 	}
 	session.pending = false
-	if !mcpServerHasSessions(session.server) {
-		handler.schedulePreparedSessionCleanupLocked(session)
-	}
+	handler.touchSessionLocked(session)
 	handler.mu.Unlock()
 }
 
-// The first Streamable HTTP request can finish before the official SDK has
-// registered its MCP session. Keep the managed lease alive briefly so the next
-// request does not observe an empty scoped environment projection.
-func (handler *ExecutorMCPHandler) schedulePreparedSessionCleanupLocked(session *executorMCPSession) {
+// touchSessionLocked owns the lease lifetime in AgentServer's MCP session
+// record. It deliberately does not infer lifecycle from the SDK's internal
+// Sessions() iterator, which can lag the first initialize response. Every
+// authenticated request refreshes the same bounded MCP idle timeout.
+func (handler *ExecutorMCPHandler) touchSessionLocked(session *executorMCPSession) {
 	if session.cleanup != nil {
 		session.cleanup.Stop()
 	}
-	session.cleanup = time.AfterFunc(preparedMCPSessionGrace, func() {
+	session.cleanup = time.AfterFunc(handler.config.SessionTimeout, func() {
 		handler.mu.Lock()
-		if handler.sessions[session.id] != session || session.pending || mcpServerHasSessions(session.server) {
+		if handler.sessions[session.id] != session || session.pending {
 			handler.mu.Unlock()
 			return
 		}
@@ -862,8 +859,8 @@ func (handler *ExecutorMCPHandler) authorizeSession(sessionID string, principal 
 	}
 	if session.cleanup != nil {
 		session.cleanup.Stop()
-		session.cleanup = nil
 	}
+	handler.touchSessionLocked(session)
 	return session, nil
 }
 
@@ -966,6 +963,10 @@ func (handler *ExecutorMCPHandler) Shutdown(ctx context.Context) error {
 		handler.mu.Lock()
 		leases := make([]ManagedSandboxSessionLease, 0, len(handler.sessions))
 		for _, session := range handler.sessions {
+			if session.cleanup != nil {
+				session.cleanup.Stop()
+				session.cleanup = nil
+			}
 			if lease := session.detachManagedSandboxLease(); lease != nil {
 				leases = append(leases, lease)
 			}

@@ -11,7 +11,7 @@
   "codexRelease": "0.160.1",
   "deployedChartVersion": "0.1.0-config.d60f184367834",
   "deployedHelmRevision": 171,
-  "previousHarnessImage": "ghcr.io/agentserver/v2-harness@sha256:e9aad107975a4095871f6ab565351eeca5f0bb6502a67affaf27f9f3bd5b4e6b",
+  "previousHarnessImage": "ghcr.io/agentserver/v2-harness@sha256:1b646f9c007309c2d886ec431cb36fda0b4f660745bb9f7409426b59359c090c",
   "images": {
     "service": "ghcr.io/agentserver/v2-service@sha256:69a6d3ffe39e55613ef38db36f7cca7b42b63d25d5d5b1be1c23adea732561de",
     "harness": "ghcr.io/agentserver/v2-harness@sha256:ba110fb0c15943cff7da283f8757d3d35840377d160e566ca13ead194d0f9212",

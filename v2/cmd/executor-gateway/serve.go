@@ -290,6 +290,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	environmentResolver = environmentResolver.WithLogger(slog.Default())
 	shellIdentities, err := executorgateway.NewDefaultShellV1IdentityAllocator()
 	if err != nil {
 		return err

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"path"
 	"regexp"
 	"sort"
@@ -67,6 +68,7 @@ type ResolvedEnvironment struct {
 
 type EnvironmentResolver struct {
 	registry EnvironmentRegistry
+	logger   *slog.Logger
 }
 
 func NewEnvironmentResolver(registry EnvironmentRegistry) (*EnvironmentResolver, error) {
@@ -74,6 +76,12 @@ func NewEnvironmentResolver(registry EnvironmentRegistry) (*EnvironmentResolver,
 		return nil, errors.New("environment registry is required")
 	}
 	return &EnvironmentResolver{registry: registry}, nil
+}
+
+func (resolver *EnvironmentResolver) WithLogger(logger *slog.Logger) *EnvironmentResolver {
+	copy := *resolver
+	copy.logger = logger
+	return &copy
 }
 
 func (resolver *EnvironmentResolver) List(ctx context.Context, workspaceID, executorID string) (ListEnvironmentsResult, error) {
@@ -311,6 +319,17 @@ func (resolver *EnvironmentResolver) listRegisteredStable(ctx context.Context, s
 		if err != nil || len(registered) != 0 {
 			return registered, err
 		}
+	}
+	if resolver.logger != nil {
+		fields := []any{
+			"workspace_id", scope.WorkspaceID, "session_id", scope.SessionID,
+			"run_attempt_id", scope.RunAttemptID, "run_attempt_generation", scope.RunAttemptGeneration,
+			"executor_id", scope.ExecutorID,
+		}
+		if scope.Workspace != nil {
+			fields = append(fields, "workspace_environment_id", scope.Workspace.EnvironmentID, "repository_bound", scope.Workspace.RepositoryID != "")
+		}
+		resolver.logger.Warn("scoped executor environment projection remained empty after retries", fields...)
 	}
 	return registered, nil
 }

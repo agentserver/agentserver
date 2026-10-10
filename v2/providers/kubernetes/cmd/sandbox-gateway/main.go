@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -70,7 +71,7 @@ func run() error {
 		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{cert}, ServerName: serverName},
 	}
 	defer transport.CloseIdleConnections()
-	runtime, err := adapter.NewHTTPRuntimeClient(&http.Client{Transport: transport})
+	runtime, err := adapter.NewHTTPRuntimeClient(&http.Client{Transport: transport}, slog.Default())
 	if err != nil {
 		return err
 	}

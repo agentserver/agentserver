@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -22,7 +23,10 @@ const (
 	runtimeBusyRetryDelay = 40 * time.Millisecond
 )
 
-type HTTPRuntimeClient struct{ client *http.Client }
+type HTTPRuntimeClient struct {
+	client *http.Client
+	logger *slog.Logger
+}
 
 func (c *HTTPRuntimeClient) PrepareRepository(ctx context.Context, e Endpoint, r k8sruntime.PrepareRepositoryRequest) (k8sruntime.RepositoryState, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -55,14 +59,18 @@ func (c *HTTPRuntimeClient) PrepareRepository(ctx context.Context, e Endpoint, r
 
 // NewHTTPRuntimeClient requires a caller-provided authenticated transport.
 // Production assembly configures server verification and gateway mTLS.
-func NewHTTPRuntimeClient(client *http.Client) (*HTTPRuntimeClient, error) {
+func NewHTTPRuntimeClient(client *http.Client, loggers ...*slog.Logger) (*HTTPRuntimeClient, error) {
 	if client == nil || client.Transport == nil {
 		return nil, errors.New("runtime authenticated HTTP transport is required")
 	}
 	copy := *client
 	copy.Timeout = 0
 	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &HTTPRuntimeClient{client: &copy}, nil
+	var logger *slog.Logger
+	if len(loggers) > 0 {
+		logger = loggers[0]
+	}
+	return &HTTPRuntimeClient{client: &copy, logger: logger}, nil
 }
 
 func (c *HTTPRuntimeClient) request(ctx context.Context, e Endpoint, method, path string, body any) (*http.Response, error) {
@@ -88,6 +96,9 @@ func (c *HTTPRuntimeClient) request(ctx context.Context, e Endpoint, method, pat
 	r.Header.Set(k8sruntime.BootHeader, e.BootID)
 	resp, err := c.client.Do(r)
 	if err != nil {
+		if c.logger != nil {
+			c.logger.Error("runtime HTTP request failed", "method", method, "path", path, "pod_uid", e.PodUID, "boot_id", e.BootID, "error", err)
+		}
 		return nil, errors.New("runtime transport unavailable")
 	}
 	return resp, nil
@@ -170,14 +181,25 @@ func (c *HTTPRuntimeClient) exchange(ctx context.Context, e Endpoint, path strin
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, "runtime_transport", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, runtimeDispatchErrorFromDocument(resp.StatusCode, readRuntimeError(resp))
+		document := readRuntimeError(resp)
+		if c.logger != nil {
+			code := ""
+			if document.valid {
+				code = document.document.Code
+			}
+			c.logger.Error("runtime dispatch rejected", "path", path, "status", resp.StatusCode, "code", code, "pod_uid", e.PodUID, "boot_id", e.BootID, "operation_id", o.OperationID, "execution_id", o.ExecutionID)
+		}
+		return nil, runtimeDispatchErrorFromDocument(resp.StatusCode, document)
 	}
 	media, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || media != "application/x-ndjson" {
+		if c.logger != nil {
+			c.logger.Error("runtime dispatch returned invalid stream", "path", path, "status", resp.StatusCode, "content_type", resp.Header.Get("Content-Type"), "pod_uid", e.PodUID, "boot_id", e.BootID, "operation_id", o.OperationID, "execution_id", o.ExecutionID)
+		}
 		resp.Body.Close()
 		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, "invalid_runtime_stream", errors.New("invalid runtime stream content type"))
 	}
-	return executorgateway.NewSandboxOperationExchange(t, o, resp.Body)
+	return executorgateway.NewSandboxOperationExchange(t, o, resp.Body, c.logger)
 }
 
 type runtimeErrorDocument struct {

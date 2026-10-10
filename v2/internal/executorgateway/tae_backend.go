@@ -355,7 +355,7 @@ func newTAEHTTPExchange(
 
 // NewSandboxOperationExchange decodes the shared bounded, identity-fenced
 // stream used by managed providers. It does not acquire dispatch authority.
-func NewSandboxOperationExchange(target executionbackend.Target, operation executionbackend.OperationContext, body io.ReadCloser) (executionbackend.Exchange, error) {
+func NewSandboxOperationExchange(target executionbackend.Target, operation executionbackend.OperationContext, body io.ReadCloser, loggers ...*slog.Logger) (executionbackend.Exchange, error) {
 	if !target.Kind.Managed() || target.Validate() != nil || operation.Validate() != nil || body == nil {
 		return nil, errors.New("invalid managed operation stream")
 	}
@@ -363,7 +363,11 @@ func NewSandboxOperationExchange(target executionbackend.Target, operation execu
 	if target.Kind != executionbackend.KindTAE {
 		ref.BackendKind = target.Kind
 	}
-	return newTAEHTTPExchange(target, operation, backendOperationIdentity(operation, target.EnvironmentID), ref, body, nil, true, http.StatusOK), nil
+	var logger *slog.Logger
+	if len(loggers) > 0 {
+		logger = loggers[0]
+	}
+	return newTAEHTTPExchange(target, operation, backendOperationIdentity(operation, target.EnvironmentID), ref, body, logger, true, http.StatusOK), nil
 }
 
 func (exchange *taeHTTPExchange) Target() executionbackend.Target { return exchange.target }

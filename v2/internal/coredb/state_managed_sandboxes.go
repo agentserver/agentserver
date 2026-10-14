@@ -245,16 +245,23 @@ func (s *StateStore) RenewManagedSandboxActivity(ctx context.Context, command Re
 		if sandbox.DesiredState != ManagedSandboxDesiredReady || sandbox.ObservedState != ManagedSandboxReady {
 			return ManagedSandbox{}, commandError(ErrorInvalidState, operation, "sandbox", sandbox.ID, "sandbox is not ready for activity")
 		}
+		// Repository preparation and the MCP keepalive renew the same attempt
+		// activity with different TTLs. A short renewal must never shorten a
+		// live lease (e.g. 5m -> 30s while the keepalive ticks every 100s).
+		// After an explicit release, however, a fresh acquisition starts with
+		// its own TTL rather than reviving the previously released lifetime.
 		upsert := fmt.Sprintf(`
-INSERT INTO %s
+INSERT INTO %s AS current_activity
     (sandbox_id, target_generation, run_attempt_id, run_attempt_generation, lease_expires_at)
 VALUES ($1, $2, $3, $4, pg_catalog.clock_timestamp() + ($5 * interval '1 millisecond'))
 ON CONFLICT (sandbox_id, run_attempt_id, run_attempt_generation) DO UPDATE
 SET target_generation = EXCLUDED.target_generation,
-    lease_expires_at = EXCLUDED.lease_expires_at,
+    lease_expires_at = CASE WHEN current_activity.released_at IS NULL
+        THEN GREATEST(current_activity.lease_expires_at, EXCLUDED.lease_expires_at)
+        ELSE EXCLUDED.lease_expires_at END,
     released_at = NULL,
-    version = %s.version + 1,
-    updated_at = pg_catalog.clock_timestamp()`, s.table("managed_sandbox_activities"), s.table("managed_sandbox_activities"))
+    version = current_activity.version + 1,
+    updated_at = pg_catalog.clock_timestamp()`, s.table("managed_sandbox_activities"))
 		if _, err := transaction.Exec(ctx, upsert, sandbox.ID, sandbox.Generation, attempt.ID, attempt.Generation, command.ActivityTTL.Milliseconds()); err != nil {
 			return ManagedSandbox{}, databaseError(operation+" upsert activity", err)
 		}

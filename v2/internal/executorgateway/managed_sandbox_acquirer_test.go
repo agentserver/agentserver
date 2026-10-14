@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/sandboxclient"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
+	"github.com/agentserver/agentserver/v2/internal/workspacerepository"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -72,6 +74,39 @@ func TestGatewayManagedSandboxSessionAcquirerEnsuresOnDemandAndReleases(t *testi
 	ensure, renew, release = client.calls()
 	if ensure != 1 || renew != 1 || release != 1 {
 		t.Fatalf("final ensure/renew/release calls = %d/%d/%d, want 1/1/1", ensure, renew, release)
+	}
+}
+
+type failedCleanupLifecycleClient struct {
+	recordingManagedSandboxLifecycleClient
+}
+
+func (client *failedCleanupLifecycleClient) ReleaseActivity(ctx context.Context, request sandboxcontract.ReleaseSandboxActivityRequest, authority sandboxclient.TokenRequest) (sandboxcontract.SandboxResponse, error) {
+	_, _ = client.recordingManagedSandboxLifecycleClient.ReleaseActivity(ctx, request, authority)
+	return sandboxcontract.SandboxResponse{}, errors.New("release response lost")
+}
+
+func TestGatewayManagedSandboxAcquirerReportsUnconfirmedPreparationCleanup(t *testing.T) {
+	client := &failedCleanupLifecycleClient{}
+	acquirer, err := NewDefaultGatewayManagedSandboxSessionAcquirer(client, ManagedSandboxProvisioningSpec{
+		Region: "sg", EnvironmentID: testEnvironmentID, SandboxTTL: time.Hour, ActivityTTL: 5 * time.Minute,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := testExecutorMCPPrincipal("preparation-cleanup")
+	p.ManagedSandbox = &ExecutorManagedSandboxAuthority{SettingVersion: 1, Region: "sg", EnvironmentID: testEnvironmentID}
+	// Repository preparation is intentionally not configured. Acquisition
+	// reaches this failure only after obtaining a live activity.
+	p.Repository = &workspacerepository.Binding{}
+	_, err = acquirer.Acquire(t.Context(), p)
+	var cleanupErr *managedAcquireCleanupError
+	if !errors.As(err, &cleanupErr) {
+		t.Fatalf("unconfirmed cleanup marker lost: %v", err)
+	}
+	ensure, renew, release := client.calls()
+	if ensure != 1 || renew != 1 || release != 1 {
+		t.Fatalf("lifecycle calls = %d/%d/%d", ensure, renew, release)
 	}
 }
 
@@ -168,7 +203,25 @@ func TestExecutorMCPAcquiresManagedSandboxOnlyOnFirstExecutorToolCall(t *testing
 			t.Fatalf("managed sandbox acquire calls after tool call %d = %d, want 1", call, acquirer.callCount())
 		}
 	}
+	// The worker can open another transport for the same run (repository
+	// bootstrap and dynamic tool execution). Both must share one activity.
+	otherSession := connectRawMCPClient(t, server, testMCPBearerA)
+	result, err := otherSession.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: mcpcontract.ToolListEnvironments, Arguments: json.RawMessage(`{}`),
+	})
+	if err != nil || result == nil || result.IsError || acquirer.callCount() != 1 {
+		t.Fatalf("second MCP transport = %+v, %v; acquisitions=%d, want 1", result, err, acquirer.callCount())
+	}
 	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err = otherSession.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: mcpcontract.ToolListEnvironments, Arguments: json.RawMessage(`{}`),
+	})
+	if err != nil || result == nil || result.IsError || lease.releaseCallCount() != 0 {
+		t.Fatalf("closing first MCP transport broke second = %+v, %v", result, err)
+	}
+	if err := otherSession.Close(); err != nil {
 		t.Fatal(err)
 	}
 	select {

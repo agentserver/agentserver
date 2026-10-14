@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/repositorycheckout"
 	"github.com/agentserver/agentserver/v2/internal/sandboxclient"
@@ -95,7 +96,7 @@ func (acquirer *GatewayManagedSandboxSessionAcquirer) SetRepositoryCredentialRes
 func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 	ctx context.Context,
 	principal ExecutorMCPPrincipal,
-) (ManagedSandboxSessionLease, error) {
+) (_ ManagedSandboxSessionLease, acquireErr error) {
 	if acquirer == nil || acquirer.client == nil || acquirer.idGenerator == nil || acquirer.now == nil || ctx == nil {
 		return nil, errors.New("managed sandbox session acquirer and context are required")
 	}
@@ -163,7 +164,11 @@ func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 	ok := false
 	defer func() {
 		if !ok {
-			releaseManagedSandboxLease(lease, acquirer.logger)
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := releaseManagedSandboxLeaseWithContext(releaseCtx, lease, acquirer.logger); err != nil {
+				acquireErr = errors.Join(acquireErr, &managedAcquireCleanupError{cause: err})
+			}
 		}
 	}()
 	if principal.Repository != nil {
@@ -350,6 +355,10 @@ type gatewayManagedSandboxSessionLease struct {
 
 func (lease *gatewayManagedSandboxSessionLease) RepositoryContext() *sandboxcontract.RepositoryContext {
 	return lease.repositoryContext
+}
+
+func (lease *gatewayManagedSandboxSessionLease) Target() executionbackend.Target {
+	return lease.ref.Target(lease.session.EnvironmentID)
 }
 
 func (lease *gatewayManagedSandboxSessionLease) Done() <-chan struct{} { return lease.done }

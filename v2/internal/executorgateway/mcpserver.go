@@ -179,6 +179,27 @@ func NewExecutorMCPHandler(authenticator ExecutorMCPAuthenticator, resolver *Env
 	if config.IDGenerator == nil {
 		return nil, errors.New("executor MCP session ID generator is required")
 	}
+	if config.ManagedSandboxAcquirer != nil {
+		leases := newManagedAttemptLeases(config.ManagedSandboxAcquirer)
+		leases.logger = config.Logger
+		config.ManagedSandboxAcquirer = leases
+		// Copy the executors so their fencing boundary invalidates the same
+		// shared activity used by this handler, without mutating caller config.
+		if config.ShellExecutor != nil {
+			shell := *config.ShellExecutor
+			if shell.config.ManagedTargetFencer != nil {
+				shell.config.ManagedTargetFencer = &attemptLeaseFencer{pool: leases, base: shell.config.ManagedTargetFencer}
+			}
+			config.ShellExecutor = &shell
+		}
+		if config.ReadFileExecutor != nil {
+			readFile := *config.ReadFileExecutor
+			if readFile.config.ManagedTargetFencer != nil {
+				readFile.config.ManagedTargetFencer = &attemptLeaseFencer{pool: leases, base: readFile.config.ManagedTargetFencer}
+			}
+			config.ReadFileExecutor = &readFile
+		}
+	}
 
 	handler := &ExecutorMCPHandler{
 		authenticator: authenticator,

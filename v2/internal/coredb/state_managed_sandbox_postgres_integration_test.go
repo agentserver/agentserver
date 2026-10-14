@@ -229,6 +229,59 @@ func testManagedSandboxLifecycle(t *testing.T, providerKind string, shared ...bo
 	if err != nil {
 		t.Fatalf("RenewManagedSandboxActivity() error = %v", err)
 	}
+	// Regression: repository preparation checks attempt authority by renewing
+	// for 30s, while the owner renews its 5m lease only every 100s. It must not
+	// make the environment disappear between t+30s and the first keepalive.
+	activityExpiryQuery := fmt.Sprintf("SELECT lease_expires_at FROM %s.managed_sandbox_activities WHERE sandbox_id=$1 AND run_attempt_id=$2", quoteIdentifier(schema))
+	var longExpiry, shortExpiry time.Time
+	if err := pool.QueryRow(t.Context(), activityExpiryQuery, ready.ID, running.Attempt.ID).Scan(&longExpiry); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // before AND after repository checkout
+		_, err := store.RenewManagedSandboxActivity(t.Context(), RenewManagedSandboxActivityCommand{
+			SandboxID: ready.ID, Generation: ready.Generation,
+			RunID: running.Run.ID, AttemptID: running.Attempt.ID,
+			AttemptGeneration: running.Attempt.Generation, HolderID: running.Attempt.HolderID,
+			ActivityTTL: 30 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pool.QueryRow(t.Context(), activityExpiryQuery, ready.ID, running.Attempt.ID).Scan(&shortExpiry); err != nil {
+		t.Fatal(err)
+	}
+	if shortExpiry.Before(longExpiry) {
+		t.Fatalf("repository renewal shortened activity from %s to %s", longExpiry, shortExpiry)
+	}
+	if _, _, err := store.ReleaseManagedSandboxActivity(t.Context(), ReleaseManagedSandboxActivityCommand{
+		SandboxID: ready.ID, Generation: ready.Generation,
+		RunID: running.Run.ID, AttemptID: running.Attempt.ID,
+		AttemptGeneration: running.Attempt.Generation, HolderID: running.Attempt.HolderID,
+		IdleTTL: 5 * time.Minute,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	renewActivity := RenewManagedSandboxActivityCommand{
+		SandboxID: ready.ID, Generation: ready.Generation,
+		RunID: running.Run.ID, AttemptID: running.Attempt.ID,
+		AttemptGeneration: running.Attempt.Generation, HolderID: running.Attempt.HolderID,
+		ActivityTTL: 30 * time.Second,
+	}
+	if _, err := store.RenewManagedSandboxActivity(t.Context(), renewActivity); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(t.Context(), activityExpiryQuery, ready.ID, running.Attempt.ID).Scan(&shortExpiry); err != nil {
+		t.Fatal(err)
+	}
+	if !shortExpiry.Before(longExpiry) {
+		t.Fatal("fresh acquisition revived explicitly released 5m lifetime")
+	}
+	renewActivity.ActivityTTL = 5 * time.Minute
+	ready, err = store.RenewManagedSandboxActivity(t.Context(), renewActivity)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if providerKind == DispatchTargetKubernetes {
 		envs, err := store.ListOnlineExecutorEnvironments(t.Context(), ListOnlineExecutorEnvironmentsQuery{WorkspaceID: running.Run.WorkspaceID, SessionID: running.Run.SessionID, RunAttemptID: running.Attempt.ID, RunAttemptGeneration: running.Attempt.Generation})
 		if err != nil || len(envs) != 1 || envs[0].BackendKind != DispatchTargetKubernetes || envs[0].TargetID != ready.ID {
